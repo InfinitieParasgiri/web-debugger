@@ -1,10 +1,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
-import { requestDetails, captureRequestBody, readBody, safeText, sanitizeHeaders } from './core.js';
+import { requestDetails, captureRequestBody, readBody, safeText, sanitizeBody, sanitizeHeaders } from './core.js';
 
 const symbol = Symbol.for('next-web-debugger.server.v1');
 const shared = globalThis[symbol] ??= { context: new AsyncLocalStorage(), sessions: new Map(), installed: false };
 const cookieName = '__web_debugger_session';
+const axiosInstances = shared.axiosInstances ??= new WeakMap();
 function prune() { for (const [id, session] of shared.sessions) if (session.expires <= Date.now()) shared.sessions.delete(id); }
 function sessionFor(request) {
   prune();
@@ -60,6 +61,49 @@ export function registerServerCapture() {
       return result;
     };
   }
+}
+
+/** Opt-in capture for an existing server Axios instance. No runtime Axios dependency is imported. */
+export function instrumentAxios(client) {
+  if (!client?.interceptors?.request || !client?.interceptors?.response || typeof client.getUri !== 'function') throw new TypeError('Pass your existing Axios instance.');
+  if (axiosInstances.has(client)) return axiosInstances.get(client);
+  const records = new WeakMap();
+  const headers = value => value?.toJSON ? value.toJSON() : value;
+  const describe = (config, session, url) => {
+    const details = requestDetails(url, { method: config.method || 'GET', headers: headers(config.headers), body: typeof config.data === 'string' || config.data instanceof URLSearchParams ? config.data : undefined }, undefined, session.redactKeys);
+    if (config.data != null && typeof config.data !== 'string' && !(config.data instanceof URLSearchParams)) {
+      const plain = Object.getPrototypeOf(config.data) === Object.prototype || Array.isArray(config.data);
+      details.requestBody = plain ? safeText(config.data, session.redactKeys, session.maxBodyBytes) : '[Binary/stream body omitted]';
+      details.requestBodyReplayable = plain;
+      if (plain && !details.requestHeaders['content-type']) details.requestHeaders['content-type'] = 'application/json';
+    }
+    return details;
+  };
+  const requestId = client.interceptors.request.use(config => {
+    const session = shared.context.getStore();
+    if (active(session)) attempt(() => {
+      const entry = { id: randomUUID(), source: 'Server', transport: 'axios', ...describe(config, session, client.getUri(config)), status: 'Pending', startedAt: Date.now(), responseBody: '' };
+      records.set(config, { session, entry }); append(session, 'entries', entry);
+    });
+    return config;
+  }, error => { throw error; }, { synchronous: true });
+  const finish = (response, error) => attempt(() => {
+    const config = response?.config || error?.config, record = config && records.get(config);
+    if (!record || !active(record.session)) return;
+    const { session, entry } = record;
+    Object.assign(entry, describe(config, session, entry.url));
+    entry.status = response?.status || 'Failed'; entry.duration = Date.now() - entry.startedAt;
+    entry.responseHeaders = sanitizeHeaders(headers(response?.headers), session.redactKeys);
+    const data = response?.data;
+    entry.responseBody = config.responseType === 'stream' || config.responseType === 'arraybuffer' || config.responseType === 'blob' ? '[Streaming or binary body omitted]'
+      : typeof data === 'string' ? sanitizeBody(data.slice(0, session.maxBodyBytes), session.redactKeys) + (data.length > session.maxBodyBytes ? '\n[Body truncated]' : '')
+      : data !== undefined ? safeText(data, session.redactKeys, session.maxBodyBytes) : safeText(error?.message || '', session.redactKeys, session.maxBodyBytes);
+    update(session, entry); records.delete(config);
+  });
+  const responseId = client.interceptors.response.use(response => { finish(response); return response; }, error => { finish(error.response, error); throw error; });
+  const dispose = () => { client.interceptors.request.eject(requestId); client.interceptors.response.eject(responseId); axiosInstances.delete(client); };
+  axiosInstances.set(client, dispose);
+  return dispose;
 }
 
 /** Wrap a route handler to associate outgoing fetch and console calls with the developer's session. */

@@ -2,7 +2,7 @@
 
 A reusable, dependency-free browser debugger with an optional React wrapper and Node.js server integration for Next.js. Hold **Ctrl** and type **3 → 0 → 5** within two seconds between keys. A round button appears; click it to open the network and console panel. Repeat the shortcut or press Escape to minimize. **Stop** ends capture and removes the panel. Sessions expire after 15 minutes by default.
 
-Features: fetch and XMLHttpRequest capture, URL/method/status/source search, request parameters/headers/body, response headers/body, JSON/text search with paths and highlights, shell-quoted cURL copying, console logs/warnings/errors and unhandled browser errors, pause/resume, clear, and responsive layout. No telemetry or external service is used.
+Features: fetch and XMLHttpRequest capture, optional server Axios capture, URL/method/status/source search, status/method filters, collapsible request/response sections, request metadata, searchable syntax-colored JSON, cURL/request/response copying, console logs/warnings/errors and unhandled browser errors, pause/resume, clear, and a draggable responsive panel. No telemetry or external service is used.
 
 ## Install from GitHub
 
@@ -132,7 +132,41 @@ export async function getServerSideProps(context) {
 }
 ```
 
-Pass any other headers your authorization callback needs. In an App Router Server Component, `await headers()` from `next/headers` can supply the headers; wrap the relevant data-loading callback with `runWithDebugSession({ headers: await headers() }, callback)`. Using `headers()` can affect static rendering, so add this only to routes that already require request-time rendering. Server capture covers outgoing native `fetch` and console calls inside the wrapped context. It does not automatically capture all SSR rendering, incoming request bodies, Axios/Node HTTP clients, or build-time calls. Other visitors' requests run outside the developer's session and are not recorded.
+Pass any other headers your authorization callback needs. In an App Router Server Component, `await headers()` from `next/headers` can supply the headers; wrap the relevant data-loading callback with `runWithDebugSession({ headers: await headers() }, callback)`. Using `headers()` can affect static rendering, so add this only to routes that already require request-time rendering. Server capture covers outgoing native `fetch`, instrumented Axios, and console calls inside the wrapped context. It does not automatically capture all SSR rendering, incoming request bodies, other Node HTTP clients, or build-time calls. Other visitors' requests run outside the developer's session and are not recorded.
+
+### SSR on Node.js with a Laravel backend
+
+Laravel needs no debugger changes. Capture the outgoing call inside the Next.js server, where Laravel's original JSON is available. A browser `_rsc` request contains page-rendering data and cannot reconstruct the original backend response.
+
+For an existing server-side Axios instance, register the optional helper immediately after creating the instance, **before response interceptors that unwrap or replace the Axios response**:
+
+```ts
+// Your existing server-only API client module.
+import { instrumentAxios } from 'next-web-debugger/server';
+// Keep your existing Axios instance creation here.
+instrumentAxios(api); // api is your existing instance; do not create a second client.
+```
+
+No Axios runtime dependency is bundled. Attach the helper to every server instance you actually use; its returned cleanup function ejects only the debugger interceptors. It observes Axios configuration/response data, masks secrets, and keeps existing response/error objects. Custom adapters, request/response transforms, binary/stream bodies, and generated headers can limit cURL replay fidelity. Browser Axios is captured through fetch/XHR and retains that transport label.
+
+Wrap your existing SSR data-loading call in the page that already renders dynamically:
+
+```tsx
+import { headers } from 'next/headers';
+import { runWithDebugSession } from 'next-web-debugger/server';
+import { api } from '@/lib/api'; // Existing instrumented server Axios instance.
+
+export default async function ProductsPage() {
+  const response = await runWithDebugSession(
+    { headers: await headers() },
+    () => api.get('/products', { params: { page: 1, per_page: 24 } }),
+  );
+  // Keep your existing UI and data mapping; response is unchanged.
+  return <pre>{JSON.stringify(response.data, null, 2)}</pre>;
+}
+```
+
+Use the session endpoint and `<WebDebugger serverEndpoint="/api/web-debugger" />` from the preceding setup. Activate the debugger first, then navigate/refetch the SSR page so the cookie reaches the server. The panel shows **Server · axios** with Laravel's JSON, parameters and headers. Only actually executed calls are captured; a cached/prefetched page may not issue a fresh backend request. Hard reload ends the browser capture; reactivate and navigate/refetch again.
 
 ## Options and limits
 

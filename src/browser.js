@@ -15,7 +15,8 @@ export function initDebugger(options = {}) {
   const endpoint = options.serverEndpoint ? new URL(options.serverEndpoint, location.href) : null;
   if (endpoint && endpoint.origin !== location.origin) throw new Error('Debugger endpoint must use the same origin.');
   const nativeFetch = window.fetch;
-  const state = { active: false, paused: false, open: false, tab: 'network', entries: [], logs: [], selected: null, query: '', responseQuery: '', hideNavigation: false };
+  const state = { active: false, paused: false, open: false, tab: 'network', entries: [], logs: [], selected: null, query: '', responseQuery: '', hideNavigation: false, method: '', status: '' };
+  const sectionState = new Map();
   const positions = { bubble: null, panel: null };
   let host, ui, stopCapture = () => {}, expiry, poll, activating = false, destroyed = false, sequence = '', lastKey = 0, renderPending = false, serverCursor = 0, polling = false, clearVersion = 0, generation = 0;
   const ignore = url => endpoint && (() => { try { return new URL(url, location.href).pathname === endpoint.pathname; } catch { return false; } })();
@@ -161,14 +162,18 @@ export function initDebugger(options = {}) {
       [hidden]{display:none!important}.head,.toolbar,.tabs{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid #2b3545}.head strong{font-size:15px}.mode{color:#7de0c8;font-size:11px}.spacer{flex:1}button{background:#202c3e;color:#dce6f6;border:1px solid #38475d;padding:7px 10px;border-radius:7px}.tabs button[aria-selected=true]{background:#164239;border-color:#55cbb1;color:#a3ffe6}
       input{min-width:0;background:#0b121d;color:#e1ebff;border:1px solid #38475d;border-radius:7px;padding:9px;width:100%}.search{flex:1}.content{display:flex;flex:1;min-height:0}.list{width:36%;overflow:auto;border-right:1px solid #2b3545;padding:8px}.details{flex:1;min-width:0;overflow:auto;padding:14px}.row{display:block;text-align:left;width:100%;margin-bottom:6px;background:#141f2e;border-color:#27374d;overflow-wrap:anywhere}.row.selected{border-color:#64e8ce}.row small{display:block;color:#95a5bf;margin-top:5px}.bad{color:#ffb4b4}.console{padding:12px;overflow:auto;width:100%}.log{white-space:pre-wrap;overflow-wrap:anywhere;padding:10px 4px;border-bottom:1px solid #283347}.log small{color:#93a4bf}.note,.empty{color:#98abc5;font-size:12px;line-height:1.6}.notice{padding:0 16px 8px;color:#ffdc8b;font-size:12px}pre{background:#0b121d;border:1px solid #28374b;border-radius:8px;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.65 ui-monospace,monospace}h3{font-size:12px;color:#9badc7;margin:18px 0 8px}.match{padding:7px;border-bottom:1px solid #2b3545;overflow-wrap:anywhere}mark{background:#5a4918;color:#fff1ad}
       @media(max-width:600px){.panel{right:8px;bottom:8px;width:calc(100vw - 16px);height:calc(100dvh - 16px)}.head,.toolbar,.tabs{padding:10px;flex-wrap:wrap}.content{flex-direction:column}.list{width:100%;max-height:36%;border-right:0;border-bottom:1px solid #2b3545}.details{min-height:0}.head .mode{max-width:110px}}
+      .panel{background:#101319;border-radius:10px;border-color:#303641;font-size:12px}.head{background:#181c24}.head strong{font-size:13px}.head strong::before{content:'';display:inline-block;width:7px;height:7px;background:#2ccea0;border-radius:50%;margin-right:7px}.mode{color:#8a94a6}.head,.toolbar,.tabs{border-color:#292f3a}.tabs button{border:0;border-radius:0;background:transparent;color:#8e98aa}.tabs button[aria-selected=true]{background:transparent;color:#27d8ed;border-bottom:2px solid #27d8ed}.toolbar{flex-wrap:wrap;padding:10px 14px}.search{flex-basis:300px}.filters{display:flex;gap:6px;flex-wrap:wrap}button[aria-pressed=true]{color:#32def1;border-color:#32a6b7;background:#12303a}.list{width:32%;padding:0;background:#101319}.row{border:0;border-bottom:1px solid #292f3a;border-radius:0;margin:0;padding:12px;background:transparent;font:11px ui-monospace,monospace}.row.selected{background:#191f2a;box-shadow:inset 2px 0 #25d5e9}.row small{font-size:10px}.details{padding:16px;background:#101319}.request-title{display:block;font:12px/1.6 ui-monospace,monospace;overflow-wrap:anywhere}.metadata{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:12px;background:#181c24;border:1px solid #2c323e;border-radius:8px;margin:14px 0}.metadata small{display:block;color:#768195;font:9px/1.7 system-ui;text-transform:uppercase;letter-spacing:1px}.metadata span{font:12px ui-monospace,monospace}.copy-actions{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}.accordion{border:1px solid #2c323e;border-radius:7px;margin:12px 0;overflow:hidden}.accordion summary{background:#181c24;padding:11px;cursor:pointer;font-weight:600;list-style:none}.accordion summary::after{content:'+';float:right;color:#acb7c8}.accordion[open] summary::after{content:'−'}.accordion-content{padding:10px}.accordion pre{border:0;border-radius:0;padding:0;background:transparent;margin:0;font-size:11px}.payload{max-height:330px;overflow:auto;margin-top:10px!important}.kv{display:grid;grid-template-columns:minmax(90px,30%) 1fr;gap:8px 16px;font:11px/1.5 ui-monospace,monospace}.kv dt{color:#8d99ae;overflow-wrap:anywhere}.kv dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.json-key{color:#41def3}.json-string{color:#76e3b2}.json-number{color:#e9c568}.json-literal{color:#c99bf5}.footer{padding:8px 14px;border-top:1px solid #292f3a;color:#7e899b;font-size:10px}.status-success{color:#35cda1}.status-failed{color:#ff9898}
+      @media(min-width:601px){.panel{width:min(1180px,calc(100vw - 36px));height:min(760px,calc(100dvh - 36px))}}
+      @media(max-width:600px){.list{width:100%}.metadata{grid-template-columns:repeat(2,minmax(0,1fr))}.filters{gap:4px}.filters button{padding:5px 7px}}
     </style>
     <button class="bubble" aria-label="Open web debugger">⌘</button>
     <section class="panel" role="dialog" aria-label="Web debugger" hidden>
-      <div class="head"><strong>Web debugger</strong><span class="mode"></span><span class="spacer"></span><button data-action="minimize" aria-label="Minimize debugger">—</button><button data-action="stop">Stop</button></div>
+      <div class="head"><strong>API Debugger</strong><span class="request-count note"></span><span class="mode"></span><span class="spacer"></span><button data-action="minimize" aria-label="Minimize debugger">—</button><button data-action="stop">Stop</button></div>
       <div class="tabs" role="tablist"><button role="tab" data-tab="network">Network</button><button role="tab" data-tab="console">Console</button><span class="spacer"></span><span class="note">Ctrl + 3 → 0 → 5</span></div>
-      <div class="toolbar"><input class="search" aria-label="Search requests or console" placeholder="Search URL, method, status, source…"><button data-action="pause">Pause</button><button data-action="clear">Clear</button></div>
+      <div class="toolbar"><input class="search" aria-label="Search requests or console" placeholder="Filter by URL, endpoint, method or status code…"><button data-action="pause">Pause</button><button data-action="clear">Clear</button><div class="filters"><button data-status="success" aria-pressed="false">Success</button><button data-status="failed" aria-pressed="false">Failed</button>${['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map(method => `<button data-method="${method}" aria-pressed="false">${method}</button>`).join('')}</div></div>
       <div class="navigation-filter"><button data-action="navigation" aria-pressed="false">Hide Next.js navigation</button></div>
       <div class="notice" role="status"></div><div class="content"><div class="list"></div><div class="details"></div><div class="console" hidden></div></div>
+      <div class="footer">Ctrl + 3 → 0 → 5 to toggle · Drag the header to move · Captured data is masked</div>
     </section>`;
     document.documentElement.appendChild(host);
     const get = selector => shadow.querySelector(selector);
@@ -182,19 +187,54 @@ export function initDebugger(options = {}) {
       const button = event.target.closest('button'); if (!button) return;
       if (button.dataset.action === 'minimize') { state.open = false; render(); ui.bubble.focus(); }
       if (button.dataset.action === 'stop') disable();
-      if (button.dataset.action === 'clear') { clearVersion++; state.entries = []; state.logs = []; state.selected = null; render(); }
+      if (button.dataset.action === 'clear') { clearVersion++; state.entries = []; state.logs = []; state.selected = null; sectionState.clear(); render(); }
       if (button.dataset.action === 'pause') { state.paused = !state.paused; render(); }
       if (button.dataset.action === 'navigation') { state.hideNavigation = !state.hideNavigation; render(); }
+      if (button.dataset.method) { state.method = state.method === button.dataset.method ? '' : button.dataset.method; render(); }
+      if (button.dataset.status) { state.status = state.status === button.dataset.status ? '' : button.dataset.status; render(); }
       if (button.dataset.tab) { state.tab = button.dataset.tab; render(); }
     });
     ui.search.addEventListener('input', () => { state.query = ui.search.value; render(); });
     shadow.addEventListener('keydown', event => { if (event.key === 'Escape') { state.open = false; render(); ui.bubble.focus(); } });
   }
   function node(tag, text, className) { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; }
+  function appendPayload(target, text, query = '') {
+    const needle = query.toLowerCase();
+    const ranges = [];
+    if (needle) {
+      let start = 0, index;
+      const lower = text.toLowerCase();
+      while (ranges.length < 200 && (index = lower.indexOf(needle, start)) !== -1) { ranges.push({ start: index, end: index + query.length }); start = index + query.length; }
+    }
+    let rangeIndex = 0;
+    const append = (parent, part, offset = 0) => {
+      while (rangeIndex < ranges.length && ranges[rangeIndex].end <= offset) rangeIndex++;
+      let start = 0;
+      for (let i = rangeIndex; i < ranges.length && ranges[i].start < offset + part.length; i++) {
+        const from = Math.max(0, ranges[i].start - offset), to = Math.min(part.length, ranges[i].end - offset);
+        parent.append(document.createTextNode(part.slice(start, from)), node('mark', part.slice(from, to))); start = to;
+      }
+      parent.append(document.createTextNode(part.slice(start)));
+    };
+    let json = false; try { JSON.parse(text); json = true; } catch { /* Render other formats as text. */ }
+    if (!json) { append(target, text); return; }
+    const pattern = /"(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|\b(?:true|false|null)\b|-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/g;
+    let start = 0;
+    for (const match of text.matchAll(pattern)) {
+      append(target, text.slice(start, match.index), start);
+      const token = match[0], type = token.startsWith('"') ? /^\s*:/.test(text.slice(match.index + token.length)) ? 'key' : 'string' : /^(true|false|null)$/.test(token) ? 'literal' : 'number';
+      const span = node('span', undefined, `json-${type}`); append(span, token, match.index); target.append(span); start = match.index + token.length;
+    }
+    append(target, text.slice(start), start);
+  }
   function render() {
     if (!ui) return;
     ui.bubble.hidden = state.open; ui.panel.hidden = !state.open;
     keepPositions();
+    ui.shadow.querySelector('.request-count').textContent = `${state.entries.length} requests`;
+    ui.shadow.querySelector('.filters').hidden = state.tab !== 'network';
+    for (const button of ui.shadow.querySelectorAll('[data-method]')) button.setAttribute('aria-pressed', String(state.method === button.dataset.method));
+    for (const button of ui.shadow.querySelectorAll('[data-status]')) button.setAttribute('aria-pressed', String(state.status === button.dataset.status));
     const navigationButton = ui.shadow.querySelector('[data-action="navigation"]');
     navigationButton.textContent = state.hideNavigation ? 'Show Next.js navigation' : 'Hide Next.js navigation';
     navigationButton.setAttribute('aria-pressed', String(state.hideNavigation));
@@ -211,7 +251,7 @@ export function initDebugger(options = {}) {
       return;
     }
     ui.list.replaceChildren();
-    const entries = state.entries.filter(entry => (!state.hideNavigation || !isNavigation(entry)) && `${entry.url} ${entry.method} ${entry.status} ${entry.source} ${isNavigation(entry) ? 'Next.js navigation' : ''}`.toLowerCase().includes(query));
+    const entries = state.entries.filter(entry => (!state.hideNavigation || !isNavigation(entry)) && (!state.method || entry.method === state.method) && (!state.status || (state.status === 'success' ? entry.status >= 200 && entry.status < 400 : entry.status === 'Failed' || entry.status >= 400)) && `${entry.url} ${entry.method} ${entry.status} ${entry.source} ${isNavigation(entry) ? 'Next.js navigation' : ''}`.toLowerCase().includes(query));
     if (!entries.length) ui.list.append(node('p', state.hideNavigation ? 'No matching requests. Next.js navigation is hidden; show it again or repeat an API action. Server-side APIs require server capture.' : 'No requests yet. Reload or repeat an action while debugging is active.', 'empty'));
     for (const entry of [...entries].reverse()) {
       const row = node('button', `${entry.method} · ${entry.status}`, 'row' + (state.selected === entry.id ? ' selected' : ''));
@@ -226,19 +266,44 @@ export function initDebugger(options = {}) {
     ui.details.dataset.signature = signature;
     ui.details.replaceChildren();
     if (!entry) { ui.details.append(node('p', 'Select a request to inspect parameters, headers, response and cURL.', 'empty')); return; }
-    ui.details.append(node('strong', `${entry.method} ${entry.status}`));
+    ui.details.append(node('strong', `${entry.method} ${entry.url}`, 'request-title'));
     if (isNavigation(entry)) ui.details.append(node('p', 'Next.js navigation response (React Server Component payload). This contains page-rendering data. Backend API JSON fetched during SSR requires server capture around the server data-loading code.', 'note rsc-note'));
-    const copy = node('button', 'Copy cURL'); copy.style.marginLeft = '12px';
-    copy.onclick = async () => { try { await navigator.clipboard.writeText(toCurl(entry)); copy.textContent = 'Copied'; } catch { copy.textContent = 'Copy unavailable'; } };
-    ui.details.append(copy, node('p', 'Sensitive fields are masked. Replace placeholders and missing credentials before replaying cURL. Multipart, binary and omitted bodies need manual reconstruction.', 'note'));
-    const section = (label, value) => { ui.details.append(node('h3', label), node('pre', typeof value === 'string' ? value : JSON.stringify(value, null, 2))); };
-    section('URL', entry.url);
+    const metadata = node('div', undefined, 'metadata');
+    const size = value => `${new TextEncoder().encode(value || '').byteLength.toLocaleString()} B`;
+    for (const [label, value] of [['Status', entry.status], ['Duration', `${entry.duration ?? '…'} ms`], ['Time', new Date(entry.startedAt).toLocaleTimeString()], ['Source', `${entry.source} · ${entry.transport || 'fetch'}`], ['Request captured', size(entry.requestBody)], ['Response captured', size(entry.responseBody)]]) {
+      const item = node('div'); item.append(node('small', label), node('span', String(value), label === 'Status' ? entry.status >= 200 && entry.status < 400 ? 'status-success' : 'status-failed' : undefined)); metadata.append(item);
+    }
+    ui.details.append(metadata);
+    const actions = node('div', undefined, 'copy-actions');
+    for (const [label, value] of [['Copy cURL', toCurl(entry)], ['Copy Request', () => JSON.stringify({ url: entry.url, method: entry.method, headers: entry.requestHeaders, body: entry.requestBody }, null, 2)], ['Copy Response', () => entry.responseBody || '']]) {
+      const button = node('button', label); button.onclick = async () => { try { await navigator.clipboard.writeText(typeof value === 'function' ? value() : value); button.textContent = 'Copied'; setTimeout(() => { button.textContent = label; }, 1200); } catch { button.textContent = 'Copy unavailable'; } }; actions.append(button);
+    }
+    ui.details.append(actions, node('p', 'Sensitive fields are masked. Replace placeholders and missing credentials before replaying cURL. Multipart, binary and omitted bodies need manual reconstruction.', 'note'));
+    const section = (label, value, open = false, table = false) => {
+      const accordion = node('details', undefined, 'accordion');
+      const sectionKey = entry.id + ':' + label;
+      accordion.open = sectionState.get(sectionKey) ?? open;
+      accordion.append(node('summary', label));
+      const content = node('div', undefined, 'accordion-content');
+      if (value !== undefined) {
+        if (table && value && typeof value === 'object' && Object.keys(value).length) {
+          const list = node('dl', undefined, 'kv');
+          for (const [key, item] of Object.entries(value)) list.append(node('dt', key), node('dd', typeof item === 'string' ? item : JSON.stringify(item)));
+          content.append(list);
+        } else { const pre = node('pre'); appendPayload(pre, typeof value === 'string' ? value : JSON.stringify(value, null, 2)); content.append(pre); }
+      }
+      accordion.append(content); accordion.addEventListener('toggle', () => { sectionState.set(sectionKey, accordion.open); if (sectionState.size > maxEntries * 6) sectionState.delete(sectionState.keys().next().value); }); ui.details.append(accordion);
+      return content;
+    };
+    section('cURL', toCurl(entry), true);
     let params = {}; try { const search = new URL(entry.url).searchParams; params = Object.fromEntries([...new Set(search.keys())].map(key => [key, search.getAll(key).length > 1 ? search.getAll(key) : search.get(key)])); } catch { /* Invalid URL. */ }
-    section('Query parameters', params); section('Request headers', entry.requestHeaders); section('Request body', entry.requestBody || '(empty)');
-    section('Response headers', entry.responseHeaders || {});
-    ui.details.append(node('h3', 'Search response'));
+    section(`Query parameters (${Object.keys(params).length})`, params, false, true);
+    section(`Request headers (${Object.keys(entry.requestHeaders || {}).length})`, entry.requestHeaders || {}, false, true);
+    section('Request body', entry.requestBody || 'No body', false);
+    section(`Response headers (${Object.keys(entry.responseHeaders || {}).length})`, entry.responseHeaders || {}, false, true);
+    const responseSection = section(isNavigation(entry) ? 'Raw response body · Next.js RSC' : 'Response body', undefined, true);
     const search = node('input'); search.setAttribute('aria-label', 'Search response'); search.placeholder = 'Search JSON keys, values or response text…'; search.value = state.responseQuery;
-    const results = node('div'), body = node('pre');
+    const results = node('div'), body = node('pre', undefined, 'payload');
     const update = () => {
       results.replaceChildren(); body.replaceChildren();
       const q = state.responseQuery, response = entry.responseBody || '(empty / pending)';
@@ -247,18 +312,10 @@ export function initDebugger(options = {}) {
         results.append(node('p', `${matches.length} matches (maximum 100)`, 'note'));
         for (const match of matches) results.append(node('div', `${match.path}: ${match.value}`, 'match'));
       }
-      if (!q) body.textContent = response;
-      else {
-        let start = 0, index, count = 0;
-        while ((index = response.toLowerCase().indexOf(q.toLowerCase(), start)) !== -1 && count++ < 200) {
-          body.append(document.createTextNode(response.slice(start, index)), node('mark', response.slice(index, index + q.length))); start = index + q.length;
-        }
-        body.append(document.createTextNode(response.slice(start)));
-      }
+      appendPayload(body, response, q);
     };
     search.oninput = () => { state.responseQuery = search.value; update(); };
-    ui.details.append(search, results, node('h3', 'Response body'), body); update();
-    if (isNavigation(entry)) ui.details.querySelector('h3:last-of-type').textContent = 'Raw response body · Next.js RSC';
+    responseSection.append(search, results, body); update();
   }
 
   async function pollServer() {

@@ -147,3 +147,36 @@ test.describe('touch dragging', () => {
     await expect(page.getByRole('dialog')).toBeVisible();
   });
 });
+
+test('reference layout displays server Axios JSON with accordions, filters and copy actions', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.evaluate(() => { window.debuggerController.destroy(); window.debuggerController = window.initDebugger({ mode: 'server', serverEndpoint: '/api/web-debugger' }); });
+  await activate(page);
+  await page.evaluate(() => fetch('/api/ssr-products'));
+  const row = page.locator('.row').filter({ hasText: 'Server · axios' });
+  await expect(row).toHaveCount(1); await row.click();
+  await expect(page.locator('.metadata')).toContainText('Server · axios');
+  await expect(page.locator('.payload')).toContainText('Alice');
+  await expect(page.locator('.json-key')).not.toHaveCount(0);
+  await expect(page.locator('.json-string')).not.toHaveCount(0);
+  const query = page.getByText('Query parameters (2)', { exact: true }); await query.click();
+  await expect(page.locator('.accordion').filter({ has: query }).locator('.kv')).toContainText('per_page');
+  await page.getByRole('button', { name: 'Copy Response', exact: true }).click();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(JSON.parse(copied).data.orders[0].customer).toBe('Alice'); expect(copied).not.toContain('private-value');
+  await page.getByRole('textbox', { name: 'Search response', exact: true }).fill('alice');
+  await expect(page.locator('.match')).toContainText('customer');
+  await page.getByRole('textbox', { name: 'Search response', exact: true }).fill('"customer": "Alice"');
+  expect((await page.locator('.payload mark').allTextContents()).join('')).toBe('"customer": "Alice"');
+  await page.getByRole('textbox', { name: 'Search response', exact: true }).fill('');
+  await page.getByRole('button', { name: 'POST', exact: true }).click();
+  await expect(page.locator('.row')).toHaveCount(0);
+  await page.getByRole('button', { name: 'POST', exact: true }).click();
+  await page.getByRole('button', { name: 'Success', exact: true }).click();
+  await expect(page.locator('.row')).toHaveCount(2);
+  await row.click();
+  await page.locator('.details').evaluate(element => { element.scrollTop = 0; });
+  await page.screenshot({ path: 'test-results/debugger-ssr-axios.png' });
+  await page.locator('.payload').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: 'test-results/debugger-ssr-response.png' });
+});

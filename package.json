@@ -22,5 +22,5 @@
   "engines": { "node": ">=20" },
   "peerDependencies": { "react": ">=18" },
   "peerDependenciesMeta": { "react": { "optional": true } },
-  "devDependencies": { "@playwright/test": "^1.56.0" }
+  "devDependencies": { "@playwright/test": "^1.56.0", "axios": "^1.20.0" }
 }

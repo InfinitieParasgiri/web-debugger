@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { createDebuggerHandlers, registerServerCapture, withDebugCapture } from '../src/server.js';
+import { createDebuggerHandlers, registerServerCapture, withDebugCapture, instrumentAxios } from '../src/server.js';
+import axios from 'axios';
 registerServerCapture();
 const handlers = createDebuggerHandlers({ authorize: request => new Headers(request.headers).get('cookie')?.includes('testDeveloper=yes') === true });
 const serverOrders = withDebugCapture(async () => {
@@ -8,11 +9,17 @@ const serverOrders = withDebugCapture(async () => {
   console.info('server order loaded');
   return Response.json(await response.json());
 });
+const laravelClient = axios.create({ baseURL: 'http://127.0.0.1:4315' });
+instrumentAxios(laravelClient);
+const ssrProducts = withDebugCapture(async () => {
+  const response = await laravelClient.get('/api/example', { params: { page: 1, per_page: 24 } });
+  return Response.json(response.data);
+});
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
-  if (url.pathname === '/api/web-debugger' || url.pathname === '/api/server-orders') {
+  if (url.pathname === '/api/web-debugger' || url.pathname === '/api/server-orders' || url.pathname === '/api/ssr-products') {
     const input = new Request('http://127.0.0.1:4315' + request.url, { method: request.method, headers: request.headers });
-    const output = url.pathname === '/api/server-orders' ? await serverOrders(input) : await handlers[request.method](input);
+    const output = url.pathname === '/api/server-orders' ? await serverOrders(input) : url.pathname === '/api/ssr-products' ? await ssrProducts(input) : await handlers[request.method](input);
     response.writeHead(output.status, Object.fromEntries(output.headers)); response.end(await output.text()); return;
   }
   if (url.pathname === '/api/example') {
