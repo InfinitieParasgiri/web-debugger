@@ -15,7 +15,8 @@ export function initDebugger(options = {}) {
   const endpoint = options.serverEndpoint ? new URL(options.serverEndpoint, location.href) : null;
   if (endpoint && endpoint.origin !== location.origin) throw new Error('Debugger endpoint must use the same origin.');
   const nativeFetch = window.fetch;
-  const state = { active: false, paused: false, open: false, tab: 'network', entries: [], logs: [], selected: null, query: '', responseQuery: '' };
+  const state = { active: false, paused: false, open: false, tab: 'network', entries: [], logs: [], selected: null, query: '', responseQuery: '', hideNavigation: false };
+  const positions = { bubble: null, panel: null };
   let host, ui, stopCapture = () => {}, expiry, poll, activating = false, destroyed = false, sequence = '', lastKey = 0, renderPending = false, serverCursor = 0, polling = false, clearVersion = 0, generation = 0;
   const ignore = url => endpoint && (() => { try { return new URL(url, location.href).pathname === endpoint.pathname; } catch { return false; } })();
   const bounded = (list, entry) => { list.push(entry); if (list.length > maxEntries) list.splice(0, list.length - maxEntries); };
@@ -102,13 +103,60 @@ export function initDebugger(options = {}) {
     stopCapture = () => restores.forEach(restore => restore());
   }
 
+  function isNavigation(entry) {
+    if (/text\/x-component/i.test(entry.responseHeaders?.['content-type'] || '') || entry.requestHeaders?.rsc === '1') return true;
+    try { return new URL(entry.url).searchParams.has('_rsc'); } catch { return false; }
+  }
+  function place(element, key, x, y) {
+    if (element.hidden) return;
+    const rect = element.getBoundingClientRect();
+    const left = Math.max(8, Math.min(x, Math.max(8, window.innerWidth - rect.width - 8)));
+    const top = Math.max(8, Math.min(y, Math.max(8, window.innerHeight - rect.height - 8)));
+    positions[key] = { x: left, y: top };
+    Object.assign(element.style, { left: `${left}px`, top: `${top}px`, right: 'auto', bottom: 'auto' });
+  }
+  function keepPositions() {
+    if (!ui) return;
+    for (const key of ['bubble', 'panel']) {
+      const position = positions[key]; if (position) place(ui[key], key, position.x, position.y);
+    }
+  }
+  function makeDraggable(element, handle, key) {
+    let drag, suppressClick = false;
+    handle.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || !event.isPrimary || (handle !== element && event.target.closest('button,input,a'))) return;
+      const rect = element.getBoundingClientRect();
+      drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left, top: rect.top, moved: false };
+      suppressClick = false;
+      handle.setPointerCapture(event.pointerId);
+    });
+    handle.addEventListener('pointermove', event => {
+      if (!drag || drag.id !== event.pointerId) return;
+      const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+      if (!drag.moved && Math.hypot(dx, dy) < 5) return;
+      drag.moved = true; event.preventDefault();
+      place(element, key, drag.left + dx, drag.top + dy);
+    });
+    const finish = event => {
+      if (!drag || drag.id !== event.pointerId) return;
+      suppressClick = drag.moved; drag = null;
+      if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    };
+    handle.addEventListener('pointerup', finish); handle.addEventListener('pointercancel', finish);
+    handle.addEventListener('lostpointercapture', () => { drag = null; });
+    handle.addEventListener('click', event => {
+      if (suppressClick && event.detail > 0) { event.preventDefault(); event.stopImmediatePropagation(); }
+      suppressClick = false;
+    }, true);
+  }
   function mount() {
     host = document.createElement('div'); host.setAttribute('data-web-debugger', '');
     const shadow = host.attachShadow({ mode: 'open' });
     shadow.innerHTML = `<style>
       :host{all:initial;color-scheme:dark;font:13px system-ui,sans-serif;color:#dce6f6}
       *{box-sizing:border-box}button,input{font:inherit}button{cursor:pointer}button:focus-visible,input:focus-visible{outline:2px solid #64e8ce;outline-offset:2px}
-      .bubble{position:fixed;bottom:22px;right:22px;width:54px;height:54px;border:1px solid #64e8ce;border-radius:50%;background:#112a32;color:#64e8ce;font-size:20px;box-shadow:0 6px 24px #0008;z-index:2147483647}
+      .bubble{position:fixed;bottom:22px;right:22px;width:54px;height:54px;border:1px solid #64e8ce;border-radius:50%;background:#112a32;color:#64e8ce;font-size:20px;box-shadow:0 6px 24px #0008;z-index:2147483647;touch-action:none;cursor:grab}
+      .head{touch-action:none;cursor:grab;user-select:none}.bubble:active,.head:active{cursor:grabbing}
       .panel{position:fixed;bottom:18px;right:18px;width:min(960px,calc(100vw - 36px));height:min(650px,calc(100dvh - 36px));background:#101722;border:1px solid #344155;border-radius:16px;box-shadow:0 18px 80px #0009;z-index:2147483647;display:flex;flex-direction:column;overflow:hidden}
       [hidden]{display:none!important}.head,.toolbar,.tabs{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid #2b3545}.head strong{font-size:15px}.mode{color:#7de0c8;font-size:11px}.spacer{flex:1}button{background:#202c3e;color:#dce6f6;border:1px solid #38475d;padding:7px 10px;border-radius:7px}.tabs button[aria-selected=true]{background:#164239;border-color:#55cbb1;color:#a3ffe6}
       input{min-width:0;background:#0b121d;color:#e1ebff;border:1px solid #38475d;border-radius:7px;padding:9px;width:100%}.search{flex:1}.content{display:flex;flex:1;min-height:0}.list{width:36%;overflow:auto;border-right:1px solid #2b3545;padding:8px}.details{flex:1;min-width:0;overflow:auto;padding:14px}.row{display:block;text-align:left;width:100%;margin-bottom:6px;background:#141f2e;border-color:#27374d;overflow-wrap:anywhere}.row.selected{border-color:#64e8ce}.row small{display:block;color:#95a5bf;margin-top:5px}.bad{color:#ffb4b4}.console{padding:12px;overflow:auto;width:100%}.log{white-space:pre-wrap;overflow-wrap:anywhere;padding:10px 4px;border-bottom:1px solid #283347}.log small{color:#93a4bf}.note,.empty{color:#98abc5;font-size:12px;line-height:1.6}.notice{padding:0 16px 8px;color:#ffdc8b;font-size:12px}pre{background:#0b121d;border:1px solid #28374b;border-radius:8px;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.65 ui-monospace,monospace}h3{font-size:12px;color:#9badc7;margin:18px 0 8px}.match{padding:7px;border-bottom:1px solid #2b3545;overflow-wrap:anywhere}mark{background:#5a4918;color:#fff1ad}
@@ -119,11 +167,15 @@ export function initDebugger(options = {}) {
       <div class="head"><strong>Web debugger</strong><span class="mode"></span><span class="spacer"></span><button data-action="minimize" aria-label="Minimize debugger">—</button><button data-action="stop">Stop</button></div>
       <div class="tabs" role="tablist"><button role="tab" data-tab="network">Network</button><button role="tab" data-tab="console">Console</button><span class="spacer"></span><span class="note">Ctrl + 3 → 0 → 5</span></div>
       <div class="toolbar"><input class="search" aria-label="Search requests or console" placeholder="Search URL, method, status, source…"><button data-action="pause">Pause</button><button data-action="clear">Clear</button></div>
+      <div class="navigation-filter"><button data-action="navigation" aria-pressed="false">Hide Next.js navigation</button></div>
       <div class="notice" role="status"></div><div class="content"><div class="list"></div><div class="details"></div><div class="console" hidden></div></div>
     </section>`;
     document.documentElement.appendChild(host);
     const get = selector => shadow.querySelector(selector);
     ui = { shadow, bubble: get('.bubble'), panel: get('.panel'), list: get('.list'), details: get('.details'), console: get('.console'), search: get('.search'), notice: get('.notice') };
+    get('.navigation-filter').style.cssText = 'padding:8px 16px;border-bottom:1px solid #2b3545';
+    makeDraggable(ui.bubble, ui.bubble, 'bubble'); makeDraggable(ui.panel, get('.head'), 'panel');
+    window.addEventListener('resize', keepPositions);
     get('.mode').textContent = `${mode === 'static' ? 'Static export' : mode === 'server' ? 'Server deployment' : 'Unknown deployment'} · Live`;
     ui.bubble.onclick = () => { state.open = true; render(); ui.search.focus(); };
     shadow.addEventListener('click', event => {
@@ -132,6 +184,7 @@ export function initDebugger(options = {}) {
       if (button.dataset.action === 'stop') disable();
       if (button.dataset.action === 'clear') { clearVersion++; state.entries = []; state.logs = []; state.selected = null; render(); }
       if (button.dataset.action === 'pause') { state.paused = !state.paused; render(); }
+      if (button.dataset.action === 'navigation') { state.hideNavigation = !state.hideNavigation; render(); }
       if (button.dataset.tab) { state.tab = button.dataset.tab; render(); }
     });
     ui.search.addEventListener('input', () => { state.query = ui.search.value; render(); });
@@ -141,6 +194,11 @@ export function initDebugger(options = {}) {
   function render() {
     if (!ui) return;
     ui.bubble.hidden = state.open; ui.panel.hidden = !state.open;
+    keepPositions();
+    const navigationButton = ui.shadow.querySelector('[data-action="navigation"]');
+    navigationButton.textContent = state.hideNavigation ? 'Show Next.js navigation' : 'Hide Next.js navigation';
+    navigationButton.setAttribute('aria-pressed', String(state.hideNavigation));
+    ui.shadow.querySelector('.navigation-filter').hidden = state.tab !== 'network';
     ui.shadow.querySelector('[data-action="pause"]').textContent = state.paused ? 'Resume' : 'Pause';
     for (const tab of ui.shadow.querySelectorAll('[data-tab]')) tab.setAttribute('aria-selected', String(state.tab === tab.dataset.tab));
     ui.list.hidden = ui.details.hidden = state.tab !== 'network'; ui.console.hidden = state.tab !== 'console';
@@ -153,14 +211,15 @@ export function initDebugger(options = {}) {
       return;
     }
     ui.list.replaceChildren();
-    const entries = state.entries.filter(entry => `${entry.url} ${entry.method} ${entry.status} ${entry.source}`.toLowerCase().includes(query));
-    if (!entries.length) ui.list.append(node('p', 'No requests yet. Reload or repeat an action while debugging is active.', 'empty'));
+    const entries = state.entries.filter(entry => (!state.hideNavigation || !isNavigation(entry)) && `${entry.url} ${entry.method} ${entry.status} ${entry.source} ${isNavigation(entry) ? 'Next.js navigation' : ''}`.toLowerCase().includes(query));
+    if (!entries.length) ui.list.append(node('p', state.hideNavigation ? 'No matching requests. Next.js navigation is hidden; show it again or repeat an API action. Server-side APIs require server capture.' : 'No requests yet. Reload or repeat an action while debugging is active.', 'empty'));
     for (const entry of [...entries].reverse()) {
       const row = node('button', `${entry.method} · ${entry.status}`, 'row' + (state.selected === entry.id ? ' selected' : ''));
       row.append(node('small', entry.url), node('small', `${entry.source} · ${entry.transport || 'fetch'} · ${entry.duration ?? '…'} ms`));
+      if (isNavigation(entry)) row.append(node('small', 'Next.js navigation · RSC'));
       row.onclick = () => { state.selected = entry.id; state.responseQuery = ''; render(); }; ui.list.append(row);
     }
-    const entry = state.entries.find(item => item.id === state.selected);
+    const entry = entries.find(item => item.id === state.selected);
     // Preserve response-search focus while new requests arrive.
     const signature = entry ? JSON.stringify(entry) : '';
     if (ui.details.dataset.signature === signature) return;
@@ -168,6 +227,7 @@ export function initDebugger(options = {}) {
     ui.details.replaceChildren();
     if (!entry) { ui.details.append(node('p', 'Select a request to inspect parameters, headers, response and cURL.', 'empty')); return; }
     ui.details.append(node('strong', `${entry.method} ${entry.status}`));
+    if (isNavigation(entry)) ui.details.append(node('p', 'Next.js navigation response (React Server Component payload). This contains page-rendering data. Backend API JSON fetched during SSR requires server capture around the server data-loading code.', 'note rsc-note'));
     const copy = node('button', 'Copy cURL'); copy.style.marginLeft = '12px';
     copy.onclick = async () => { try { await navigator.clipboard.writeText(toCurl(entry)); copy.textContent = 'Copied'; } catch { copy.textContent = 'Copy unavailable'; } };
     ui.details.append(copy, node('p', 'Sensitive fields are masked. Replace placeholders and missing credentials before replaying cURL. Multipart, binary and omitted bodies need manual reconstruction.', 'note'));
@@ -198,6 +258,7 @@ export function initDebugger(options = {}) {
     };
     search.oninput = () => { state.responseQuery = search.value; update(); };
     ui.details.append(search, results, node('h3', 'Response body'), body); update();
+    if (isNavigation(entry)) ui.details.querySelector('h3:last-of-type').textContent = 'Raw response body · Next.js RSC';
   }
 
   async function pollServer() {
@@ -250,6 +311,7 @@ export function initDebugger(options = {}) {
     generation++;
     const wasActive = state.active; state.active = false; state.open = false;
     clearTimeout(expiry); clearInterval(poll); stopCapture(); host?.remove(); host = ui = undefined;
+    window.removeEventListener('resize', keepPositions);
     state.entries = []; state.logs = []; state.selected = null;
     if (wasActive && endpoint) void nativeFetch(endpoint.href, { method: 'DELETE', credentials: 'same-origin' }).catch(() => {});
   }

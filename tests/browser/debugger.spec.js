@@ -86,3 +86,64 @@ test('authenticated server requests and console appear alongside browser entries
   await page.getByRole('button', { name: 'Stop', exact: true }).click();
   await expect.poll(() => page.evaluate(async () => (await fetch('/api/web-debugger')).status)).toBe(404);
 });
+
+test('round button and panel drag independently, stay on screen and preserve clicks', async ({ page }) => {
+  await page.evaluate(() => window.debuggerController.enable());
+  const bubble = page.getByRole('button', { name: 'Open web debugger' });
+  const before = await bubble.boundingBox();
+  await page.mouse.move(before.x + 27, before.y + 27); await page.mouse.down();
+  await page.mouse.move(120, 120, { steps: 8 }); await page.mouse.up();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  const moved = await bubble.boundingBox();
+  expect(moved.x).toBeLessThan(before.x); expect(moved.y).toBeLessThan(before.y);
+  await bubble.click();
+  const panel = page.getByRole('dialog'), header = page.locator('.head strong');
+  const start = await panel.boundingBox(), heading = await header.boundingBox();
+  await page.mouse.move(heading.x + 10, heading.y + 8); await page.mouse.down();
+  await page.mouse.move(heading.x - 100, heading.y + 18, { steps: 8 }); await page.mouse.up();
+  expect((await panel.boundingBox()).x).toBeLessThan(start.x);
+  await page.getByRole('button', { name: 'Minimize debugger' }).click();
+  expect((await bubble.boundingBox()).x).toBeCloseTo(moved.x, 0);
+  await page.setViewportSize({ width: 390, height: 400 });
+  await bubble.click();
+  const resized = await panel.boundingBox();
+  expect(resized.x).toBeGreaterThanOrEqual(0); expect(resized.y).toBeGreaterThanOrEqual(0);
+  expect(resized.x + resized.width).toBeLessThanOrEqual(390);
+  expect(resized.y + resized.height).toBeLessThanOrEqual(400);
+});
+
+test('labels RSC navigation and filters it without changing JSON response capture', async ({ page }) => {
+  await activate(page);
+  const payload = await page.evaluate(async () => (await fetch('/news/example?_rsc=sample', { headers: { rsc: '1' } })).text());
+  expect(payload).toContain('$Sreact.fragment');
+  await page.evaluate(() => fetch('/api/example'));
+  await expect(page.locator('.row')).toHaveCount(2);
+  await page.locator('.row').filter({ hasText: 'Next.js navigation' }).click();
+  await expect(page.locator('.rsc-note')).toContainText('Backend API JSON fetched during SSR requires server capture');
+  await expect(page.locator('.details')).toContainText('$Sreact.fragment');
+  await page.getByRole('button', { name: 'Hide Next.js navigation' }).click();
+  await expect(page.locator('.row')).toHaveCount(1);
+  await page.locator('.row').click();
+  await expect(page.locator('.details')).toContainText('Alice');
+  await expect(page.locator('.rsc-note')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Show Next.js navigation' }).click();
+  await expect(page.locator('.row')).toHaveCount(2);
+});
+
+test.describe('touch dragging', () => {
+  test.use({ hasTouch: true });
+  test('moves the round button with a touch gesture without opening the panel', async ({ page, context }) => {
+    await page.evaluate(() => window.debuggerController.enable());
+    const bubble = page.getByRole('button', { name: 'Open web debugger' });
+    const bounds = await bubble.boundingBox();
+    const session = await context.newCDPSession(page);
+    await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: bounds.x + 27, y: bounds.y + 27 }] });
+    await session.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 80, y: 80 }] });
+    await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await expect(page.getByRole('dialog')).toBeHidden();
+    const moved = await bubble.boundingBox();
+    expect(moved.x).toBeLessThan(bounds.x); expect(moved.y).toBeLessThan(bounds.y);
+    await bubble.tap();
+    await expect(page.getByRole('dialog')).toBeVisible();
+  });
+});

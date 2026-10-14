@@ -19,6 +19,10 @@ const server = createServer(async (request, response) => {
     response.setHeader('content-type', 'application/json');
     response.end(JSON.stringify({ data: { orders: [{ id: 305, customer: 'Alice' }] }, token: 'private-value', html: '<img src=x onerror=alert(1)>' })); return;
   }
+  if (url.pathname === '/news/example') {
+    response.setHeader('content-type', 'text/x-component');
+    response.end('2:"$Sreact.fragment"\n4:I["[project]/node_modules/next/layout-router.js",[],"default"]\n'); return;
+  }
   if (url.pathname.startsWith('/src/') && /^\/src\/[a-z]+\.js$/.test(url.pathname)) {
     try { response.setHeader('content-type', 'text/javascript'); response.end(await readFile(new URL('..' + url.pathname, import.meta.url))); } catch { response.writeHead(404); response.end(); } return;
   }
