@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useId } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useId, useCallback } from 'react';
 import type { ApiLog } from './types';
 
 const ICON_PATHS = {
@@ -186,6 +186,7 @@ export function ServerDebugger({
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
 
   const responsePreRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
   const keySequenceRef = useRef<string[]>([]);
   const sequenceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -222,11 +223,22 @@ export function ServerDebugger({
     setPasswordError('');
   };
 
-  const hideDebugger = (nextView: 'hidden' | 'minimized') => {
+  const hideDebugger = useCallback((nextView: 'hidden' | 'minimized') => {
     setView(nextView);
     setPasswordInput('');
     setPasswordError('');
-  };
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && panelRef.current && !panelRef.current.contains(event.target)) {
+        hideDebugger('minimized');
+      }
+    };
+    document.addEventListener('pointerdown', handleOutsidePointer, true);
+    return () => document.removeEventListener('pointerdown', handleOutsidePointer, true);
+  }, [isOpen, hideDebugger]);
 
   // Ctrl + Alt + * twice, using either the number row or the numpad.
   useEffect(() => {
@@ -252,7 +264,7 @@ export function ServerDebugger({
       keySequenceRef.current.push('*');
       if (sequenceTimerRef.current) clearTimeout(sequenceTimerRef.current);
       if (keySequenceRef.current.join('') === '**') {
-        setView((prev) => prev === 'open' ? 'minimized' : 'open');
+        setView('open');
         resetSequence();
       } else {
         sequenceTimerRef.current = setTimeout(resetSequence, 1500);
@@ -474,7 +486,7 @@ export function ServerDebugger({
           {canInspect && logs.length > 0 && <span className={errorCount ? 'has-errors' : ''}>{logs.length}</span>}
         </button>
       ) : (
-        <section className={`ssr-debugger${canInspect ? '' : ' is-locked'}`} aria-label="Web debugger">
+        <section ref={panelRef} className={`ssr-debugger${canInspect ? '' : ' is-locked'}`} aria-label="Web debugger">
           <header className="debugger-header">
             <div className="debugger-brand"><span className="live-dot" /><strong>API Debugger</strong></div>
             {canInspect && <span className="request-count">{logs.length} requests · {errorCount} failed</span>}
@@ -580,7 +592,7 @@ export function ServerDebugger({
               </div>
             </div>
           </>}
-          <footer className="debugger-footer"><span><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>* → *</kbd> to toggle</span><span>{canInspect ? 'Server network inspector' : 'Password protected'}</span></footer>
+          <footer className="debugger-footer"><span><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>* → *</kbd> to open</span><span>{canInspect ? 'Server network inspector' : 'Password protected'}</span></footer>
         </section>
       )}
     </>
