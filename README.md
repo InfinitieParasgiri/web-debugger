@@ -45,3 +45,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
 ## ⌨️ Production Shortcut
 Hold **`Ctrl + Shift`** (or **`Cmd + Shift`** on Mac) and press **`3`**, then **`0`**, then **`5`** sequentially anywhere in your app—even in production—to toggle the debugger drawer open or closed!
+
+The debugger starts completely hidden, without a floating button. Hold the modifiers while pressing the three digits in order (within 1.5 seconds between digits). The same shortcut or the close button hides it again. It only polls for logs while open.
+
+Use **Enter** or **↓** in the details search to jump to the next match, and **Shift+Enter** or **↑** for the previous match. Search matches literal text in the selected response, payload, headers, or cURL tab.
+
+The shortcut controls visibility only. For production use, protect the debugger API route with your application's existing authorization before exposing captured request and response data.

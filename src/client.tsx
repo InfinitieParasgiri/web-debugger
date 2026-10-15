@@ -10,7 +10,6 @@ export interface ServerDebuggerProps {
 export function ServerDebugger({
   endpoint = '/api/__nextjs-debugger',
   pollInterval = 1500,
-  position = 'bottom-right',
 }: ServerDebuggerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [logs, setLogs] = useState<ApiLog[]>([]);
@@ -23,44 +22,51 @@ export function ServerDebugger({
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
 
-  const responsePreRef = useRef<HTMLPreElement>(null);
+  const responsePreRef = useRef<HTMLDivElement>(null);
   const keySequenceRef = useRef<string[]>([]);
   const sequenceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Keyboard shortcut listener: Ctrl + Shift + 3 -> 0 -> 5
+  // Use physical digit codes because Shift changes e.key to symbols (for example, #).
   useEffect(() => {
+    const resetSequence = () => {
+      keySequenceRef.current = [];
+      if (sequenceTimerRef.current) clearTimeout(sequenceTimerRef.current);
+    };
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Check if Ctrl or Cmd and Shift are held down
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
-        const key = e.key; // '3', '0', '5'
-        if (['3', '0', '5'].includes(key)) {
-          e.preventDefault();
-          
-          // Append to sequence
-          keySequenceRef.current.push(key);
-
-          // Clear previous timeout
-          if (sequenceTimerRef.current) clearTimeout(sequenceTimerRef.current);
-
-          // Reset sequence if no keypress within 1.5 seconds
-          sequenceTimerRef.current = setTimeout(() => {
-            keySequenceRef.current = [];
-          }, 1500);
-
-          // Check if sequence matches ['3', '0', '5']
-          if (keySequenceRef.current.join('') === '305') {
-            setIsOpen((prev) => !prev);
-            keySequenceRef.current = [];
-            if (sequenceTimerRef.current) clearTimeout(sequenceTimerRef.current);
-          }
-        }
+      if (e.repeat || e.isComposing) return;
+      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey) {
+        resetSequence();
+        return;
+      }
+      if (['Control', 'Meta', 'Shift'].includes(e.key)) return;
+      const digit = /^(?:Digit|Numpad)([0-9])$/.exec(e.code)?.[1]
+        ?? (/^[0-9]$/.test(e.key) ? e.key : '');
+      const expected = '305'[keySequenceRef.current.length];
+      if (digit !== expected) {
+        resetSequence();
+        if (digit !== '3') return;
+      }
+      e.preventDefault();
+      keySequenceRef.current.push(digit);
+      if (sequenceTimerRef.current) clearTimeout(sequenceTimerRef.current);
+      if (keySequenceRef.current.join('') === '305') {
+        setIsOpen((prev) => !prev);
+        resetSequence();
+      } else {
+        sequenceTimerRef.current = setTimeout(resetSequence, 1500);
       }
     };
-
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) resetSequence();
+    };
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', resetSequence);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
-      if (sequenceTimerRef.current) clearTimeout(sequenceTimerRef.current);
+      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', resetSequence);
+      resetSequence();
     };
   }, []);
 
@@ -75,8 +81,8 @@ export function ServerDebugger({
   };
 
   useEffect(() => {
-    fetchLogs();
     if (!isOpen) return;
+    fetchLogs();
     const timer = setInterval(fetchLogs, pollInterval);
     return () => clearInterval(timer);
   }, [isOpen, endpoint, pollInterval]);
@@ -94,6 +100,20 @@ export function ServerDebugger({
     return filteredLogs.find((l) => l.id === selectedId) || filteredLogs[0] || null;
   }, [filteredLogs, selectedId]);
 
+  const buildCurlCommand = (log: ApiLog) => {
+    let cmd = `curl -X ${log.method} "${log.url}"`;
+    Object.entries(log.requestHeaders || {}).forEach(([k, v]) => {
+      cmd += ` \
+  -H "${k}: ${v}"`;
+    });
+    if (log.requestBody) {
+      const bodyStr = typeof log.requestBody === 'string' ? log.requestBody : JSON.stringify(log.requestBody);
+      cmd += ` \
+  -d '${bodyStr.replace(/'/g, "'\''")}'`;
+    }
+    return cmd;
+  };
+
   const activeJsonData = useMemo(() => {
     if (!activeLog) return '';
     if (activeTab === 'response') return activeLog.responseBody;
@@ -102,13 +122,27 @@ export function ServerDebugger({
     return activeLog;
   }, [activeLog, activeTab]);
 
-  const formattedJsonString = useMemo(() => {
-    return typeof activeJsonData === 'string' ? activeJsonData : JSON.stringify(activeJsonData, null, 2) || 'null';
-  }, [activeJsonData]);
+  // Search exactly the text rendered in each tab, including both header/payload sections.
+  const contentSections = useMemo(() => {
+    const format = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value, null, 2) || 'null';
+    if (!activeLog) return [];
+    if (activeTab === 'params') return [
+      { label: 'Query parameters', text: format(activeLog.queryParams) },
+      { label: 'Request body', text: format(activeLog.requestBody) },
+    ];
+    if (activeTab === 'headers') return [
+      { label: 'Request headers', text: format(activeLog.requestHeaders) },
+      { label: 'Response headers', text: format(activeLog.responseHeaders) },
+    ];
+    if (activeTab === 'curl') return [{ label: 'cURL command', text: buildCurlCommand(activeLog) }];
+    return [{ label: 'Response body', text: format(activeLog.responseBody) }];
+  }, [activeLog, activeTab]);
+
+  const formattedJsonString = contentSections.map((section) => section.text).join('\n');
 
   const matchIndices = useMemo(() => {
     if (!jsonSearch.trim() || !formattedJsonString) return [];
-    const escaped = jsonSearch.replace(/[.*+?^${}()|[\\]/g, '\\$&');
+    const escaped = jsonSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(escaped, 'gi');
     const indices: number[] = [];
     let match;
@@ -120,7 +154,7 @@ export function ServerDebugger({
 
   useEffect(() => {
     setCurrentMatchIndex(0);
-  }, [jsonSearch]);
+  }, [jsonSearch, selectedId, activeLog?.id, activeTab, formattedJsonString]);
 
   const scrollToMatch = (index: number) => {
     if (matchIndices.length === 0 || !responsePreRef.current) return;
@@ -130,26 +164,30 @@ export function ServerDebugger({
     }
   };
 
+  useEffect(() => {
+    if (isOpen) scrollToMatch(currentMatchIndex);
+  }, [isOpen, currentMatchIndex, jsonSearch, formattedJsonString, activeTab]);
+
   const handleNextMatch = () => {
     if (matchIndices.length === 0) return;
     const next = (currentMatchIndex + 1) % matchIndices.length;
     setCurrentMatchIndex(next);
-    scrollToMatch(next);
+    if (next === currentMatchIndex) scrollToMatch(next);
   };
 
   const handlePrevMatch = () => {
     if (matchIndices.length === 0) return;
     const prev = (currentMatchIndex - 1 + matchIndices.length) % matchIndices.length;
     setCurrentMatchIndex(prev);
-    scrollToMatch(prev);
+    if (prev === currentMatchIndex) scrollToMatch(prev);
   };
 
-  const renderHighlightedJson = (text: string, query: string) => {
+  const renderHighlightedJson = (text: string, query: string, matchOffset = 0) => {
     if (!query.trim()) return text;
-    const escaped = query.replace(/[.*+?^${}()|[\\]/g, '\\$&');
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
 
-    let globalMatchCount = 0;
+    let globalMatchCount = matchOffset;
     return parts.map((part, index) => {
       const isMatch = part.toLowerCase() === query.toLowerCase();
       if (isMatch) {
@@ -176,20 +214,6 @@ export function ServerDebugger({
     });
   };
 
-  const buildCurlCommand = (log: ApiLog) => {
-    let cmd = `curl -X ${log.method} "${log.url}"`;
-    Object.entries(log.requestHeaders || {}).forEach(([k, v]) => {
-      cmd += ` \
-  -H "${k}: ${v}"`;
-    });
-    if (log.requestBody) {
-      const bodyStr = typeof log.requestBody === 'string' ? log.requestBody : JSON.stringify(log.requestBody);
-      cmd += ` \
-  -d '${bodyStr.replace(/'/g, "'\''")}'`;
-    }
-    return cmd;
-  };
-
   const copyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
     setCopiedText(label);
@@ -198,59 +222,23 @@ export function ServerDebugger({
 
   const errorCount = logs.filter((l) => l.isError).length;
 
-  if (!isOpen) {
-    return (
-      <button
-        onClick={() => setIsOpen(true)}
-        style={{
-          position: 'fixed',
-          bottom: 20,
-          ...(position === 'bottom-right' ? { right: 20 } : { left: 20 }),
-          zIndex: 999999,
-          background: '#0f172a',
-          color: '#38bdf8',
-          padding: '10px 18px',
-          borderRadius: 999,
-          border: errorCount > 0 ? '1px solid #ef4444' : '1px solid #334155',
-          cursor: 'pointer',
-          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-          fontSize: 13,
-          fontWeight: 600,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          boxShadow: '0 10px 30px rgba(0,0,0,0.6)',
-          backdropFilter: 'blur(8px)',
-        }}
-      >
-        <span
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: '50%',
-            background: errorCount > 0 ? '#ef4444' : '#22c55e',
-            display: 'inline-block',
-            boxShadow: errorCount > 0 ? '0 0 8px #ef4444' : '0 0 8px #22c55e',
-          }}
-        />
-        <span>SSR Network ({logs.length})</span>
-        {errorCount > 0 && (
-          <span style={{ background: '#ef4444', color: '#fff', borderRadius: 999, padding: '1px 6px', fontSize: 11, fontWeight: 700 }}>
-            {errorCount}
-          </span>
-        )}
-      </button>
-    );
-  }
+  if (!isOpen) return null;
 
   return (
     <div
+      className="ssr-debugger"
+      role="region"
+      aria-label="Web debugger"
       style={{
         position: 'fixed',
         bottom: 0,
         left: 0,
         right: 0,
-        height: '480px',
+        height: 'min(600px, 85dvh)',
+        maxHeight: '100dvh',
+        colorScheme: 'dark',
+        borderRadius: '16px 16px 0 0',
+        overflow: 'hidden',
         background: '#090d16',
         color: '#f8fafc',
         zIndex: 999999,
@@ -262,6 +250,25 @@ export function ServerDebugger({
         boxShadow: '0 -15px 40px rgba(0,0,0,0.7)',
       }}
     >
+      <style>{`
+        .ssr-debugger, .ssr-debugger * { box-sizing: border-box; }
+        .ssr-debugger button, .ssr-debugger input, .ssr-debugger select { font: inherit; }
+        .ssr-debugger button { min-height: 32px; }
+        .ssr-debugger button:hover { filter: brightness(1.18); }
+        .ssr-debugger :is(button,input,select):focus-visible { outline: 2px solid #38bdf8 !important; outline-offset: 2px; }
+        .ssr-debugger * { scrollbar-width: thin; scrollbar-color: #334155 #090d16; }
+        .ssr-debugger pre { white-space: pre; overflow: auto; line-height: 1.7; tab-size: 2; }
+        .ssr-debugger .request-row:hover { background: #142033 !important; }
+        .ssr-debugger .request-list { width: 34%; min-width: 240px; }
+        .ssr-debugger .request-details { flex: 1; min-width: 0; }
+        .ssr-debugger .search-field { width: 100%; min-width: 0; }
+        @media (max-width: 700px) {
+          .ssr-debugger .main-split { flex-direction: column; }
+          .ssr-debugger .request-list { width: 100%; min-width: 0; height: 30%; flex-shrink: 0; border-bottom: 1px solid #1e293b; }
+          .ssr-debugger .request-details { width: 100%; }
+          .ssr-debugger .search-group { flex-basis: 100% !important; }
+        }
+      `}</style>
       {/* Top Bar */}
       <div
         style={{
@@ -277,9 +284,11 @@ export function ServerDebugger({
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#38bdf8', display: 'inline-block' }} />
           <strong style={{ color: '#38bdf8', fontSize: 13, letterSpacing: '0.5px' }}>WEB DEBUGGER</strong>
+          <span style={{ color: '#94a3b8', marginLeft: 8 }}>{logs.length} requests · {errorCount} errors</span>
         </div>
 
         <select
+          aria-label="Filter requests by HTTP method"
           value={methodFilter}
           onChange={(e) => setMethodFilter(e.target.value)}
           style={{
@@ -302,7 +311,9 @@ export function ServerDebugger({
         </select>
 
         <input
-          placeholder="🔍 Search API URL or params..."
+          aria-label="Search requests"
+          className="search-field"
+          placeholder="Search URL, status or parameters…"
           value={apiSearch}
           onChange={(e) => setApiSearch(e.target.value)}
           style={{
@@ -311,15 +322,27 @@ export function ServerDebugger({
             color: '#fff',
             padding: '6px 12px',
             borderRadius: 6,
-            width: 240,
+            flex: '1 1 220px',
             fontSize: 12,
             outline: 'none',
           }}
         />
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div className="search-group" style={{ display: 'flex', alignItems: 'center', gap: 6, flex: '1 1 320px', minWidth: 0 }}>
           <input
-            placeholder="🔎 Search inside Response JSON..."
+            aria-label="Search current request details"
+            className="search-field"
+            placeholder="Find in details…"
+            title="Enter: next match · Shift+Enter: previous match"
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return;
+              if (e.key === 'Enter' || e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.shiftKey || e.key === 'ArrowUp') handlePrevMatch();
+                else handleNextMatch();
+              }
+            }}
             value={jsonSearch}
             onChange={(e) => setJsonSearch(e.target.value)}
             style={{
@@ -328,7 +351,7 @@ export function ServerDebugger({
               color: '#fff',
               padding: '6px 12px',
               borderRadius: 6,
-              width: 240,
+              flex: 1,
               fontSize: 12,
               outline: 'none',
             }}
@@ -336,7 +359,9 @@ export function ServerDebugger({
           {jsonSearch.trim() && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <span
+                role="status"
                 style={{
+                  whiteSpace: 'nowrap',
                   background: matchIndices.length > 0 ? '#eab308' : '#334155',
                   color: matchIndices.length > 0 ? '#000' : '#94a3b8',
                   padding: '3px 8px',
@@ -350,15 +375,19 @@ export function ServerDebugger({
               {matchIndices.length > 0 && (
                 <>
                   <button
+                    type="button"
                     onClick={handlePrevMatch}
-                    title="Previous match (Up)"
+                    aria-label="Previous match"
+                    title="Previous match (Shift+Enter or ↑)"
                     style={{ background: '#1e293b', color: '#fff', border: '1px solid #334155', padding: '3px 7px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}
                   >
                     ▲
                   </button>
                   <button
+                    type="button"
                     onClick={handleNextMatch}
-                    title="Next match (Down)"
+                    aria-label="Next match"
+                    title="Next match (Enter or ↓)"
                     style={{ background: '#1e293b', color: '#fff', border: '1px solid #334155', padding: '3px 7px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}
                   >
                     ▼
@@ -371,12 +400,14 @@ export function ServerDebugger({
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <button
+            type="button"
             onClick={fetchLogs}
             style={{ background: '#1e293b', color: '#cbd5e1', border: '1px solid #334155', padding: '6px 12px', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}
           >
             Refresh
           </button>
           <button
+            type="button"
             onClick={async () => {
               await fetch(endpoint, { method: 'DELETE' });
               setLogs([]);
@@ -386,6 +417,9 @@ export function ServerDebugger({
             Clear
           </button>
           <button
+            type="button"
+            aria-label="Close debugger"
+            title="Close debugger (Ctrl/Cmd + Shift + 3, 0, 5)"
             onClick={() => setIsOpen(false)}
             style={{ background: '#ef4444', color: '#fff', border: 'none', padding: '6px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 700 }}
           >
@@ -395,12 +429,12 @@ export function ServerDebugger({
       </div>
 
       {/* Main Split View */}
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <div className="main-split" style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
         {/* Left List */}
-        <div style={{ width: '36%', borderRight: '1px solid #1e293b', overflowY: 'auto', background: '#070a12' }}>
+        <div className="request-list" style={{ borderRight: '1px solid #1e293b', overflowY: 'auto', background: '#070a12' }}>
           {filteredLogs.length === 0 ? (
             <div style={{ padding: 30, color: '#64748b', textAlign: 'center', fontSize: 13 }}>
-              No API requests captured yet.<br />Trigger a server action or page load!
+              {logs.length ? 'No requests match your filters.' : 'No API requests captured yet.'}<br />{logs.length ? 'Try another search or HTTP method.' : 'Trigger a server action or page load.'}
             </div>
           ) : (
             filteredLogs.map((log) => {
@@ -408,6 +442,16 @@ export function ServerDebugger({
               return (
                 <div
                   key={log.id}
+                  className="request-row"
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={isSelected}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedId(log.id);
+                    }
+                  }}
                   onClick={() => setSelectedId(log.id)}
                   style={{
                     padding: '10px 14px',
@@ -446,7 +490,7 @@ export function ServerDebugger({
         </div>
 
         {/* Right Details */}
-        <div style={{ width: '64%', display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#090d16' }}>
+        <div className="request-details" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', background: '#090d16' }}>
           {activeLog ? (
             <>
               {/* Tabs */}
@@ -455,6 +499,8 @@ export function ServerDebugger({
                   display: 'flex',
                   alignItems: 'center',
                   gap: 8,
+                  overflowX: 'auto',
+                  flexShrink: 0,
                   padding: '8px 14px',
                   borderBottom: '1px solid #1e293b',
                   background: '#0b1120',
@@ -462,9 +508,13 @@ export function ServerDebugger({
               >
                 {(['response', 'params', 'headers', 'curl'] as const).map((tab) => (
                   <button
+                    type="button"
                     key={tab}
+                    aria-pressed={activeTab === tab}
                     onClick={() => setActiveTab(tab)}
                     style={{
+                      whiteSpace: 'nowrap',
+                      flexShrink: 0,
                       background: activeTab === tab ? '#38bdf8' : 'transparent',
                       color: activeTab === tab ? '#090d16' : '#94a3b8',
                       border: 'none',
@@ -486,6 +536,7 @@ export function ServerDebugger({
 
                 <div style={{ marginLeft: 'auto' }}>
                   <button
+                    type="button"
                     onClick={() => copyToClipboard(JSON.stringify(activeJsonData, null, 2), 'Copied!')}
                     style={{
                       background: '#1e293b',
@@ -504,80 +555,30 @@ export function ServerDebugger({
               </div>
 
               {/* Content View */}
-              <div style={{ padding: 16, overflowY: 'auto', flex: 1 }}>
-                {activeTab === 'response' && (
-                  <div>
-                    <div style={{ marginBottom: 8, color: '#4ade80', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span>Status: {activeLog.status} {activeLog.statusText} ({activeLog.durationMs}ms)</span>
-                    </div>
-                    <pre
-                      ref={responsePreRef}
-                      style={{
-                        background: '#05070c',
-                        padding: 14,
-                        borderRadius: 8,
-                        overflowX: 'auto',
-                        margin: 0,
-                        lineHeight: 1.6,
-                        border: '1px solid #1e293b',
-                        color: '#e2e8f0',
-                      }}
-                    >
-                      {renderHighlightedJson(formattedJsonString, jsonSearch)}
-                    </pre>
-                  </div>
-                )}
-
-                {activeTab === 'params' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                    <div>
-                      <div style={{ marginBottom: 6, color: '#c084fc', fontWeight: 600 }}>Query Parameters:</div>
-                      <pre style={{ background: '#05070c', padding: 12, borderRadius: 8, margin: 0, border: '1px solid #1e293b' }}>
-                        {renderHighlightedJson(JSON.stringify(activeLog.queryParams, null, 2), jsonSearch)}
+              <div ref={responsePreRef} style={{ padding: 16, overflow: 'auto', flex: 1, minHeight: 0 }}>
+                <div style={{ marginBottom: 14, color: activeLog.isError ? '#f87171' : '#4ade80', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  <strong>{activeLog.status || 'ERR'} {activeLog.statusText}</strong>
+                  <span style={{ color: '#94a3b8' }}>{activeLog.method} · {activeLog.durationMs} ms</span>
+                </div>
+                {contentSections.map((section, sectionIndex) => {
+                  const offset = contentSections.slice(0, sectionIndex).reduce((length, item) => length + item.text.length + 1, 0);
+                  const matchOffset = matchIndices.filter((index) => index < offset).length;
+                  return (
+                    <div key={section.label} style={{ marginBottom: 16 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                        <strong style={{ color: '#94a3b8', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.6px' }}>{section.label}</strong>
+                        {activeTab === 'curl' && (
+                          <button type="button" onClick={() => copyToClipboard(section.text, 'cURL Copied!')} style={{ background: '#1e293b', color: '#fff', border: '1px solid #334155', padding: '4px 10px', borderRadius: 6, cursor: 'pointer' }}>
+                            Copy cURL
+                          </button>
+                        )}
+                      </div>
+                      <pre style={{ background: '#05070c', padding: 16, borderRadius: 10, margin: 0, border: '1px solid #1e293b', color: '#e2e8f0' }}>
+                        {renderHighlightedJson(section.text, jsonSearch, matchOffset)}
                       </pre>
                     </div>
-                    <div>
-                      <div style={{ marginBottom: 6, color: '#38bdf8', fontWeight: 600 }}>Request Body Payload:</div>
-                      <pre style={{ background: '#05070c', padding: 12, borderRadius: 8, margin: 0, border: '1px solid #1e293b' }}>
-                        {renderHighlightedJson(JSON.stringify(activeLog.requestBody, null, 2), jsonSearch)}
-                      </pre>
-                    </div>
-                  </div>
-                )}
-
-                {activeTab === 'headers' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                    <div>
-                      <div style={{ marginBottom: 6, color: '#facc15', fontWeight: 600 }}>Request Headers:</div>
-                      <pre style={{ background: '#05070c', padding: 12, borderRadius: 8, margin: 0, border: '1px solid #1e293b' }}>
-                        {renderHighlightedJson(JSON.stringify(activeLog.requestHeaders, null, 2), jsonSearch)}
-                      </pre>
-                    </div>
-                    <div>
-                      <div style={{ marginBottom: 6, color: '#4ade80', fontWeight: 600 }}>Response Headers:</div>
-                      <pre style={{ background: '#05070c', padding: 12, borderRadius: 8, margin: 0, border: '1px solid #1e293b' }}>
-                        {renderHighlightedJson(JSON.stringify(activeLog.responseHeaders, null, 2), jsonSearch)}
-                      </pre>
-                    </div>
-                  </div>
-                )}
-
-                {activeTab === 'curl' && (
-                  <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <span style={{ color: '#38bdf8', fontWeight: 600 }}>cURL Command:</span>
-                      <button
-                        onClick={() => copyToClipboard(buildCurlCommand(activeLog), 'cURL Copied!')}
-                        style={{ background: '#1e293b', color: '#fff', border: 'none', padding: '3px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}
-                      >
-                        Copy cURL
-                      </button>
-                    </div>
-                    <pre style={{ background: '05070c', padding: 14, borderRadius: 8, margin: 0, border: '1px solid #1e293b', color: '#e2e8f0' }}>
-                      {buildCurlCommand(activeLog)}
-                    </pre>
-                  </div>
-                )}
+                  );
+                })}
               </div>
             </>
           ) : (
