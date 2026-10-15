@@ -1,192 +1,124 @@
-# next-web-debugger
+# ⚡ next-ssr-debugger
 
-A reusable, dependency-free browser debugger with an optional React wrapper and Node.js server integration for Next.js. Hold **Ctrl** and type **3 → 0 → 5** within two seconds between keys. A round button appears; click it to open the network and console panel. Repeat the shortcut or press Escape to minimize. **Stop** ends capture and removes the panel. Sessions expire after 15 minutes by default.
+A lightweight, zero-production-overhead **Server-Side Network & API Debugger** for Next.js (App Router & React Server Components).
 
-Features: fetch and XMLHttpRequest capture, optional server Axios capture, URL/method/status/source search, status/method filters, collapsible request/response sections, request metadata, searchable syntax-colored JSON, cURL/request/response copying, console logs/warnings/errors and unhandled browser errors, pause/resume, clear, and a draggable responsive panel. No telemetry or external service is used.
+When Next.js fetches data on the server (`async` Server Components, SSR, Server Actions, Route Handlers), those requests happen inside Node.js and **never appear in Chrome's browser Network tab**. `next-ssr-debugger` intercepts server-side `fetch` calls and renders an interactive DevTools drawer right in your browser.
 
-## Install from GitHub
+---
 
-Push this repository to your GitHub account, then run in your Next.js project:
+## ✨ Features
 
-```sh
-npm install github:YOUR_ACCOUNT/YOUR_REPOSITORY#v0.1.0
+- **Full Server API Visibility**: See every `GET`, `POST`, `PUT`, `PATCH`, and `DELETE` call made by Next.js on the server.
+- **Inspect Sent Parameters**: View exact URL query parameters (`?page=1&filter=active`), JSON request bodies, and headers sent to your backend.
+- **API Endpoint Search Bar**: Filter captured requests by URL, HTTP method, status code, or parameter values.
+- **Deep Response Search & Highlight**: Search inside large nested JSON responses with live yellow keyword highlighting and match counters.
+- **One-Click Copy JSON & cURL**: Export any server request as a `cURL` command or copy formatted JSON payloads immediately.
+- **Safe for Production**: Automatically disabled when `NODE_ENV !== 'development'`. Uses `response.clone()` so Next.js Server Component streams are never interrupted.
+
+---
+
+## 📦 Part 1: How to Publish This Package to GitHub
+
+1. Extract this zip folder (`next-ssr-debugger`).
+2. Install dependencies and test the build locally:
+   ```bash
+   cd next-ssr-debugger
+   npm install
+   npm run build
+   ```
+3. Push to a new GitHub repository:
+   ```bash
+   git init
+   git add .
+   git commit -m "feat: initial release of next-ssr-debugger"
+   git branch -M main
+   git remote add origin https://github.com/YOUR_USERNAME/next-ssr-debugger.git
+   git push -u origin main
+   ```
+
+---
+
+## 🚀 Part 2: How to Install & Use in Any Next.js Project
+
+### Step 1: Install from GitHub (or NPM)
+
+In your Next.js project terminal, run:
+
+```bash
+npm install git+https://github.com/YOUR_USERNAME/next-ssr-debugger.git
 ```
 
-Create a `v0.1.0` tag in GitHub first, or replace the tag with a commit SHA. No build step is needed: the package ships JavaScript and TypeScript declarations. The package name used in imports is `next-web-debugger`, regardless of your repository name. Node.js 20+ is required for server capture. React 18+ is an optional peer dependency for the React wrapper.
+### Step 2: Auto-Generate Server Files (CLI) or Manual Setup
 
-## Next.js setup
+You can automatically generate `instrumentation.ts` and the bridge API route using the built-in CLI:
 
-Wrap your existing config without changing its rendering settings:
-
-```js
-// next.config.mjs
-import { withDebugger } from 'next-web-debugger/next';
-
-export default withDebugger({
-  // Keep your existing settings here.
-  // output: 'export', // Only if your project already uses static export.
-});
+```bash
+npx next-ssr-debugger
 ```
 
-`withDebugger` adds build metadata: `static` for `output: 'export'`, otherwise `server`. A server deployment can still contain static pages; this label describes the deployment, not each route. Without metadata or an explicit `mode`, the panel shows `Unknown deployment`.
+#### Or set up the 3 files manually:
 
-For development, mount once in the App Router root layout:
-
-```tsx
-// app/layout.tsx
-import { WebDebugger } from 'next-web-debugger/react';
-
-export default function RootLayout({ children }: { children: React.ReactNode }) {
-  return <html><body>{children}<WebDebugger /></body></html>;
-}
-```
-
-For Pages Router, mount `<WebDebugger />` in `pages/_app.tsx` beside your existing page component. The wrapper enables unauthenticated activation only when `NODE_ENV` is `development`. Production requires authorization or the protected server endpoint below.
-
-## Production: browser capture
-
-Create a client component and connect it to your **existing developer access check**:
-
-```tsx
-// app/debugger-provider.tsx
-'use client';
-import { WebDebugger } from 'next-web-debugger/react';
-
-async function authorizeDebugger() {
-  const response = await fetch('/api/developer-access', {
-    credentials: 'same-origin', cache: 'no-store',
-  });
-  if (!response.ok) return false;
-  const access = await response.json();
-  return access.canDebug === true;
-}
-
-export default function DebuggerProvider() {
-  return <WebDebugger authorize={authorizeDebugger} />;
-}
-```
-
-Mount `<DebuggerProvider />` once in your layout. `/api/developer-access` is an example contract you implement using your existing authentication. A static export needs an external authentication service or another real developer authorization callback because it cannot host a dynamic Next.js API endpoint. Do not use `authorize={() => true}` or `development={true}` in production. The shortcut is a UI entry point, not an access credential. A browser-only callback controls the UI; it is not a security boundary against users modifying their own JavaScript.
-
-## Production: optional server capture
-
-This version supports a **single persistent Node.js process**. Sessions and records are in process memory. Serverless/multi-instance/Edge deployment requires a different session store and is not supported by this version. Build-time capture is also not included.
-
-1. Register in your existing instrumentation file (preserve any existing registration):
-
-```ts
-// instrumentation.ts
+#### 1. Create `src/instrumentation.ts` (or root `instrumentation.ts` if not using `src/`)
+```typescript
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
-    const { registerServerCapture } = await import('next-web-debugger/server');
-    registerServerCapture();
+    const { initSSRDebugger } = await import('next-ssr-debugger/server');
+    initSSRDebugger({
+      maxLogs: 100, // Optional: max requests stored in memory
+      ignoreUrls: ['https://analytics.example.com'], // Optional: ignore specific URLs
+    });
   }
 }
 ```
+*(Note: If you are using Next.js 13 or 14, enable `experimental: { instrumentationHook: true }` inside `next.config.js`. In Next.js 15+, `instrumentation.ts` works out of the box.)*
 
-2. Add a protected session endpoint using your existing server-side authentication:
+#### 2. Create Bridge API Route `src/app/api/__nextjs-debugger/route.ts`
+```typescript
+import { createDebuggerRouteHandler } from 'next-ssr-debugger/server';
 
-```ts
-// app/api/web-debugger/route.ts
-import { createDebuggerHandlers } from 'next-web-debugger/server';
-import { isDeveloperRequest } from '@/lib/auth'; // Your existing authentication.
-
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-export const { GET, POST, DELETE } = createDebuggerHandlers({
-  authorize: isDeveloperRequest,
-  durationMinutes: 15,
-  redactKeys: ['email', 'phone'],
-});
+export const { GET, DELETE } = createDebuggerRouteHandler();
 ```
 
-The callback must return exactly `true` only for an authenticated developer. It receives an object with `headers`; keep it compatible with both `Request` and `{ headers: HeadersInit }` if you use the SSR example below. The endpoint rechecks authorization on every call. POST/DELETE require the same-origin `Origin` header. Its session cookie is HttpOnly, SameSite=Strict, and Secure on HTTPS.
-
-3. Mount `<WebDebugger serverEndpoint="/api/web-debugger" />`. The endpoint authorizes activation; browser capture starts only after it succeeds. Keep the server and browser duration/redaction settings consistent.
-
-4. Wrap the server handlers whose outgoing calls you want to inspect:
-
-```ts
-import { withDebugCapture } from 'next-web-debugger/server';
-
-export const GET = withDebugCapture(async (request: Request) => {
-  // Preserve your existing handler logic here.
-  const response = await fetch(process.env.BACKEND_URL + '/orders');
-  return Response.json(await response.json());
-});
-```
-
-For SSR data loading, wrap the existing function body in `runWithDebugSession`. For example, in Pages Router:
-
-```ts
-import { runWithDebugSession } from 'next-web-debugger/server';
-
-export async function getServerSideProps(context) {
-  return runWithDebugSession(
-    { headers: { cookie: context.req.headers.cookie ?? '' } },
-    async () => {
-      // Your existing data-loading logic and props return.
-      return { props: {} };
-    },
-  );
-}
-```
-
-Pass any other headers your authorization callback needs. In an App Router Server Component, `await headers()` from `next/headers` can supply the headers; wrap the relevant data-loading callback with `runWithDebugSession({ headers: await headers() }, callback)`. Using `headers()` can affect static rendering, so add this only to routes that already require request-time rendering. Server capture covers outgoing native `fetch`, instrumented Axios, and console calls inside the wrapped context. It does not automatically capture all SSR rendering, incoming request bodies, other Node HTTP clients, or build-time calls. Other visitors' requests run outside the developer's session and are not recorded.
-
-### SSR on Node.js with a Laravel backend
-
-Laravel needs no debugger changes. Capture the outgoing call inside the Next.js server, where Laravel's original JSON is available. A browser `_rsc` request contains page-rendering data and cannot reconstruct the original backend response.
-
-For an existing server-side Axios instance, register the optional helper immediately after creating the instance, **before response interceptors that unwrap or replace the Axios response**:
-
-```ts
-// Your existing server-only API client module.
-import { instrumentAxios } from 'next-web-debugger/server';
-// Keep your existing Axios instance creation here.
-instrumentAxios(api); // api is your existing instance; do not create a second client.
-```
-
-No Axios runtime dependency is bundled. Attach the helper to every server instance you actually use; its returned cleanup function ejects only the debugger interceptors. It observes Axios configuration/response data, masks secrets, and keeps existing response/error objects. Custom adapters, request/response transforms, binary/stream bodies, and generated headers can limit cURL replay fidelity. Browser Axios is captured through fetch/XHR and retains that transport label.
-
-Wrap your existing SSR data-loading call in the page that already renders dynamically:
-
+#### 3. Add `<ServerDebugger />` to `src/app/layout.tsx`
 ```tsx
-import { headers } from 'next/headers';
-import { runWithDebugSession } from 'next-web-debugger/server';
-import { api } from '@/lib/api'; // Existing instrumented server Axios instance.
+import { ServerDebugger } from 'next-ssr-debugger/client';
 
-export default async function ProductsPage() {
-  const response = await runWithDebugSession(
-    { headers: await headers() },
-    () => api.get('/products', { params: { page: 1, per_page: 24 } }),
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>
+        {children}
+        <ServerDebugger position="bottom-right" />
+      </body>
+    </html>
   );
-  // Keep your existing UI and data mapping; response is unchanged.
-  return <pre>{JSON.stringify(response.data, null, 2)}</pre>;
 }
 ```
 
-Use the session endpoint and `<WebDebugger serverEndpoint="/api/web-debugger" />` from the preceding setup. Activate the debugger first, then navigate/refetch the SSR page so the cookie reaches the server. The panel shows **Server · axios** with Laravel's JSON, parameters and headers. Only actually executed calls are captured; a cached/prefetched page may not issue a fresh backend request. Hard reload ends the browser capture; reactivate and navigate/refetch again.
+---
 
-## Options and limits
+## 🛠️ How to Use the Debugger UI
 
-`WebDebugger` and `initDebugger` accept `mode`, `authorize`, `development`, `serverEndpoint`, `durationMinutes` (1–60), `maxEntries` (default 200, maximum 1000 per network/console list), `maxBodyBytes` (default 64 KiB, maximum 256 KiB), and `redactKeys`. Keep callbacks and arrays stable between React renders. Mount once per app. `initDebugger` returns `enable()`, `disable()`, and `destroy()` for non-React integrations.
+1. Run your Next.js app in development mode (`npm run dev`).
+2. Click the floating **`SSR Network (N)`** pill in the bottom-right corner of your browser.
+3. **Filter APIs**: Use the first search input (`Filter API URL or sent params...`) or the HTTP method dropdown (`ALL`, `GET`, `POST`, etc.) to locate a specific backend call.
+4. **Inspect Sent Params**: Click an API call on the left and switch to the **`Sent Params & Payload`** tab to verify query strings and JSON bodies sent to your backend.
+5. **Search Inside Response**: Type any key or value into the second search bar (`Search inside Response / Payload JSON...`) to highlight matches and see the total match count.
 
-Capture starts after activation. Earlier requests/logs are not recoverable. Reloading resets browser capture; activate again and repeat an action to inspect it. The server session cookie remains valid until Stop or expiry. Cross-origin response details remain subject to browser CORS rules.
+---
 
-Sensitive keys such as authorization, cookies, passwords, tokens, and API keys are masked, along with custom `redactKeys`. Redaction is best effort, especially for unstructured text, secrets embedded in URLs/paths, and truncated bodies. cURL exports contain masked placeholders and omit browser-generated headers/cookies; replace them using your own credentials before replay. String request bodies and textual `Request` bodies are captured; binary/file bodies are omitted. FormData is a descriptive preview, not a replayable multipart payload. Streaming/binary responses are omitted; large responses are truncated, and body capture has a three-second timeout. Pausing suppresses browser recording and server display polling, while server recording continues until Stop/expiry.
+## ⚙️ Props & Configuration
 
-## Development
+### `initSSRDebugger(config)` (Server)
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `maxLogs` | `number` | `100` | Maximum number of recent SSR requests kept in memory. |
+| `ignoreUrls` | `string[]` | `[]` | Array of URL substrings to exclude from capture. |
+| `endpoint` | `string` | `'/api/__nextjs-debugger'` | Internal bridge API route path. |
 
-```sh
-npm install
-npm test
-npm run check
-npx playwright install chromium
-npm run test:browser
-npm pack --dry-run
-```
-
-Tests verify response preservation, masking, cURL quoting, search paths, server authorization/session isolation, and desktop/mobile browser interactions. No live production API is used.
-
-Next.js references: [static exports](https://nextjs.org/docs/app/guides/static-exports), [server instrumentation](https://nextjs.org/docs/app/guides/instrumentation).
+### `<ServerDebugger />` (Client)
+| Prop | Type | Default | Description |
+|---|---|---|---|
+| `endpoint` | `string` | `'/api/__nextjs-debugger'` | Internal bridge API route path. |
+| `pollInterval` | `number` | `1500` | Refresh interval in milliseconds while the drawer is open. |
+| `position` | `'bottom-right' \| 'bottom-left'` | `'bottom-right'` | Screen corner for the floating toggle button. |

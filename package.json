@@ -1,26 +1,55 @@
 {
-  "name": "next-web-debugger",
-  "version": "0.1.0",
-  "description": "Session-based floating network and console debugger for Next.js",
-  "type": "module",
-  "license": "MIT",
-  "main": "./src/browser.js",
-  "types": "./src/browser.d.ts",
-  "files": ["src", "README.md", "LICENSE"],
+  "name": "next-ssr-debugger",
+  "version": "1.0.0",
+  "description": "Server-side network and SSR API debugger for Next.js (App Router & RSC)",
+  "main": "./dist/client.js",
+  "types": "./dist/client.d.ts",
+  "bin": {
+    "next-ssr-debugger": "./bin/cli.mjs"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md"
+  ],
   "exports": {
-    ".": { "types": "./src/browser.d.ts", "default": "./src/browser.js" },
-    "./react": { "types": "./src/react.d.ts", "default": "./src/react.js" },
-    "./next": { "types": "./src/next.d.ts", "default": "./src/next.js" },
-    "./server": { "types": "./src/server.d.ts", "default": "./src/server.js" }
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.mjs",
+      "require": "./dist/server.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.mjs",
+      "require": "./dist/client.js"
+    }
   },
   "scripts": {
-    "test": "node --test tests/*.test.js",
-    "test:browser": "playwright test",
-    "check": "node --check src/browser.js && node --check src/core.js && node --check src/server.js && node --check src/react.js && node --check src/next.js",
-    "prepack": "npm run check && npm test"
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "prepare": "tsup"
   },
-  "engines": { "node": ">=20" },
-  "peerDependencies": { "react": ">=18" },
-  "peerDependenciesMeta": { "react": { "optional": true } },
-  "devDependencies": { "@playwright/test": "^1.56.0", "axios": "^1.20.0" }
+  "keywords": [
+    "nextjs",
+    "ssr",
+    "rsc",
+    "debugger",
+    "devtools",
+    "network-inspector",
+    "react-server-components"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "next": ">=13.4.0",
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "next": "^14.2.0",
+    "react": "^18.2.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0"
+  }
 }
