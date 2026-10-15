@@ -1,4 +1,3 @@
-// next-ssr-debugger/src/server.ts
 import { NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
@@ -8,7 +7,6 @@ import https from 'https';
 import zlib from 'zlib';
 import type { ApiLog, SSRDebuggerConfig } from './types';
 
-// Shared temp file so all Next.js workers/routes share the exact same logs
 const CACHE_FILE = path.join(os.tmpdir(), '__nextjs_ssr_debug_logs__.json');
 
 function readLogs(): ApiLog[] {
@@ -23,7 +21,6 @@ function readLogs(): ApiLog[] {
 function saveLog(newLog: ApiLog, maxLogs = 100) {
   try {
     const logs = readLogs();
-    // Deduplicate if both fetch and http interceptors fire for the exact same request
     const isDuplicate = logs.some(
       (l) => l.url === newLog.url && l.method === newLog.method && Math.abs(l.timestamp - newLog.timestamp) < 50
     );
@@ -55,7 +52,7 @@ const globalState = globalThis as unknown as {
 };
 
 export function initSSRDebugger(config?: SSRDebuggerConfig) {
-  if (process.env.NODE_ENV !== 'development') return;
+  // Allow running in production if explicitly needed or always active in nodejs
   if (globalState.__NEXT_SSR_UNIVERSAL_PATCHED__) return;
 
   const maxLogs = config?.maxLogs ?? 100;
@@ -69,7 +66,6 @@ export function initSSRDebugger(config?: SSRDebuggerConfig) {
 
   const shouldIgnore = (url: string) => !url || ignorePatterns.some((p) => url.includes(p));
 
-  // Helper to wrap ANY fetch function (even when Next.js replaces globalThis.fetch per request!)
   const wrapFetch = (targetFetch: typeof fetch): typeof fetch => {
     if ((targetFetch as any).__isWrappedByDebugger) return targetFetch;
 
@@ -104,11 +100,7 @@ export function initSSRDebugger(config?: SSRDebuggerConfig) {
 
       let requestBody: any = null;
       if (init?.body && typeof init.body === 'string') {
-        try {
-          requestBody = JSON.parse(init.body);
-        } catch {
-          requestBody = init.body;
-        }
+        try { requestBody = JSON.parse(init.body); } catch { requestBody = init.body; }
       }
 
       try {
@@ -116,94 +108,73 @@ export function initSSRDebugger(config?: SSRDebuggerConfig) {
         const durationMs = Math.round(performance.now() - startTime);
 
         const responseHeaders: Record<string, string> = {};
-        try {
-          response.headers.forEach((v, k) => (responseHeaders[k] = v));
-        } catch {}
+        try { response.headers.forEach((v, k) => (responseHeaders[k] = v)); } catch {}
 
         const cloned = response.clone();
         let responseBody: any = null;
         try {
           const text = await cloned.text();
-          try {
-            responseBody = JSON.parse(text);
-          } catch {
-            responseBody = text.slice(0, 5000);
-          }
+          try { responseBody = JSON.parse(text); } catch { responseBody = text.slice(0, 5000); }
         } catch {}
 
-        saveLog(
-          {
-            id: Math.random().toString(36).substring(2, 10) + Date.now().toString(36),
-            url: urlString,
-            pathname,
-            method,
-            queryParams,
-            requestHeaders,
-            requestBody,
-            status: response.status,
-            statusText: response.statusText || '',
-            responseHeaders,
-            responseBody,
-            durationMs,
-            timestamp: Date.now(),
-            isError: response.status >= 400,
-          },
-          maxLogs
-        );
+        saveLog({
+          id: Math.random().toString(36).substring(2, 10) + Date.now().toString(36),
+          url: urlString,
+          pathname,
+          method,
+          queryParams,
+          requestHeaders,
+          requestBody,
+          status: response.status,
+          statusText: response.statusText || '',
+          responseHeaders,
+          responseBody,
+          durationMs,
+          timestamp: Date.now(),
+          isError: response.status >= 400,
+        }, maxLogs);
 
         return response;
       } catch (err: any) {
-        saveLog(
-          {
-            id: Math.random().toString(36).substring(2, 10) + Date.now().toString(36),
-            url: urlString,
-            pathname,
-            method,
-            queryParams,
-            requestHeaders,
-            requestBody,
-            status: 0,
-            statusText: 'FETCH_ERROR',
-            responseHeaders: {},
-            responseBody: { error: err?.message || 'Request failed' },
-            durationMs: Math.round(performance.now() - startTime),
-            timestamp: Date.now(),
-            isError: true,
-          },
-          maxLogs
-        );
+        saveLog({
+          id: Math.random().toString(36).substring(2, 10) + Date.now().toString(36),
+          url: urlString,
+          pathname,
+          method,
+          queryParams,
+          requestHeaders,
+          requestBody,
+          status: 0,
+          statusText: 'FETCH_ERROR',
+          responseHeaders: {},
+          responseBody: { error: err?.message || 'Request failed' },
+          durationMs: Math.round(performance.now() - startTime),
+          timestamp: Date.now(),
+          isError: true,
+        }, maxLogs);
         throw err;
       }
     };
 
-    // Preserve any static properties Next.js attaches to fetch
     Object.assign(wrapped, targetFetch);
     (wrapped as any).__isWrappedByDebugger = true;
     return wrapped as typeof fetch;
   };
 
-  // 1. Lock globalThis.fetch with a Getter/Setter so Next.js cannot overwrite our wrapper
   let currentFetch = wrapFetch(globalThis.fetch);
   try {
     Object.defineProperty(globalThis, 'fetch', {
       configurable: true,
       enumerable: true,
-      get() {
-        return currentFetch;
-      },
-      set(newFetch) {
-        currentFetch = wrapFetch(newFetch);
-      },
+      get() { return currentFetch; },
+      set(newFetch) { currentFetch = wrapFetch(newFetch); },
     });
   } catch {
     globalThis.fetch = currentFetch;
   }
 
-  // 2. Patch Node.js http & https (Catches Axios, Got, Superagent, Node native requests)
   const patchNodeHttp = (mod: typeof http | typeof https, defaultProtocol: string) => {
     const origRequest = mod.request;
-    const origGet = mod.get;
-
     mod.request = function (this: any, ...args: any[]) {
       const startTime = performance.now();
       let urlString = '';
@@ -266,34 +237,25 @@ export function initSSRDebugger(config?: SSRDebuggerConfig) {
             pathname = parsed.pathname;
           } catch {}
 
-          saveLog(
-            {
-              id: Math.random().toString(36).substring(2, 10) + Date.now().toString(36),
-              url: urlString,
-              pathname,
-              method: (req.method || options.method || 'GET').toUpperCase(),
-              queryParams,
-              requestHeaders: (req.getHeaders ? req.getHeaders() : {}) as Record<string, string>,
-              requestBody,
-              status: res.statusCode || 200,
-              statusText: res.statusMessage || '',
-              responseHeaders: (res.headers || {}) as Record<string, string>,
-              responseBody,
-              durationMs,
-              timestamp: Date.now(),
-              isError: (res.statusCode || 200) >= 400,
-            },
-            maxLogs
-          );
+          saveLog({
+            id: Math.random().toString(36).substring(2, 10) + Date.now().toString(36),
+            url: urlString,
+            pathname,
+            method: (req.method || options.method || 'GET').toUpperCase(),
+            queryParams,
+            requestHeaders: (req.getHeaders ? req.getHeaders() : {}) as Record<string, string>,
+            requestBody,
+            status: res.statusCode || 200,
+            statusText: res.statusMessage || '',
+            responseHeaders: (res.headers || {}) as Record<string, string>,
+            responseBody,
+            durationMs,
+            timestamp: Date.now(),
+            isError: (res.statusCode || 200) >= 400,
+          }, maxLogs);
         });
       });
 
-      return req;
-    } as any;
-
-    mod.get = function (this: any, ...args: any[]) {
-      const req = mod.request.apply(this, args as any);
-      req.end();
       return req;
     } as any;
   };
@@ -302,16 +264,12 @@ export function initSSRDebugger(config?: SSRDebuggerConfig) {
   patchNodeHttp(https, 'https:');
 
   globalState.__NEXT_SSR_UNIVERSAL_PATCHED__ = true;
-  console.log('✓ [next-ssr-debugger] Universal interceptor active (Fetch + Next Cache + Axios/HTTP)');
 }
 
 export function createDebuggerRouteHandler() {
   initSSRDebugger();
   return {
     GET: async () => {
-      if (process.env.NODE_ENV !== 'development') {
-        return NextResponse.json({ error: 'Disabled in production' }, { status: 403 });
-      }
       return NextResponse.json(readLogs());
     },
     DELETE: async () => {
