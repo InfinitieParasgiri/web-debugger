@@ -175,7 +175,6 @@ export function ServerDebugger({
   const unlockStorageKey = `next-ssr-debugger:unlocked:${endpoint}`;
   const canInspect = !password || unlockedEndpoint === unlockStorageKey;
   const detailsId = useId();
-  const [shortcutSequence, setShortcutSequence] = useState('305');
   const [logs, setLogs] = useState<ApiLog[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'overview' | 'response' | 'params' | 'headers' | 'curl'>('overview');
@@ -229,33 +228,30 @@ export function ServerDebugger({
     setPasswordError('');
   };
 
-  // Use physical digit codes because Shift changes e.key to symbols (for example, #).
+  // Ctrl + Alt + * twice, using either the number row or the numpad.
   useEffect(() => {
-    // Windows can intercept Ctrl+Shift+0 before it reaches the browser.
-    const sequence = /Windows/i.test(navigator.userAgent) ? '35' : '305';
-    setShortcutSequence(sequence);
     const resetSequence = () => {
       keySequenceRef.current = [];
       if (sequenceTimerRef.current) clearTimeout(sequenceTimerRef.current);
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.repeat || e.isComposing) return;
-      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey) {
+      if (!e.ctrlKey || !e.altKey || e.metaKey) {
         resetSequence();
         return;
       }
-      if (['Control', 'Meta', 'Shift'].includes(e.key)) return;
-      const digit = /^(?:Digit|Numpad)([0-9])$/.exec(e.code)?.[1]
-        ?? (/^[0-9]$/.test(e.key) ? e.key : '');
-      const expected = sequence[keySequenceRef.current.length];
-      if (digit !== expected) {
+      if (['Control', 'Alt', 'Shift'].includes(e.key)) return;
+      // Recognize the physical 8/* key without requiring Shift, including on Mac.
+      const isAsterisk = e.key === '*' || e.code === 'NumpadMultiply'
+        || e.code === 'Digit8';
+      if (!isAsterisk) {
         resetSequence();
-        if (digit !== '3') return;
+        return;
       }
       e.preventDefault();
-      keySequenceRef.current.push(digit);
+      keySequenceRef.current.push('*');
       if (sequenceTimerRef.current) clearTimeout(sequenceTimerRef.current);
-      if (keySequenceRef.current.join('') === sequence) {
+      if (keySequenceRef.current.join('') === '**') {
         setView((prev) => prev === 'open' ? 'minimized' : 'open');
         resetSequence();
       } else {
@@ -263,14 +259,14 @@ export function ServerDebugger({
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey) resetSequence();
+      if (!e.ctrlKey || !e.altKey) resetSequence();
     };
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('keydown', handleKeyDown, true);
+    window.addEventListener('keyup', handleKeyUp, true);
     window.addEventListener('blur', resetSequence);
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('keydown', handleKeyDown, true);
+      window.removeEventListener('keyup', handleKeyUp, true);
       window.removeEventListener('blur', resetSequence);
       resetSequence();
     };
@@ -458,7 +454,7 @@ export function ServerDebugger({
   };
 
   const errorCount = logs.filter((log) => log.isError).length;
-  const shortcutLabel = `Ctrl/Cmd + Shift + ${shortcutSequence.split('').join(' → ')}`;
+  const shortcutLabel = 'Ctrl + Alt + * → *';
 
   if (view === 'hidden') return null;
 
@@ -584,7 +580,7 @@ export function ServerDebugger({
               </div>
             </div>
           </>}
-          <footer className="debugger-footer"><span><kbd>{shortcutSequence === '35' ? 'Ctrl' : 'Ctrl / ⌘'}</kbd> + <kbd>Shift</kbd> + <kbd>{shortcutSequence.split('').join(' → ')}</kbd> to toggle</span><span>{canInspect ? 'Server network inspector' : 'Password protected'}</span></footer>
+          <footer className="debugger-footer"><span><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>* → *</kbd> to toggle</span><span>{canInspect ? 'Server network inspector' : 'Password protected'}</span></footer>
         </section>
       )}
     </>
